@@ -8,7 +8,7 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.security.SecureRandom
 
-class PtpIpProbe(context: Context) {
+internal class PtpIpProbe(context: Context) {
     private val appContext = context.applicationContext
 
     private var commandSocket: Socket? = null
