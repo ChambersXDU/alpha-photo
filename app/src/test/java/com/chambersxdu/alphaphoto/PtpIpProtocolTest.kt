@@ -22,6 +22,16 @@ class PtpIpProtocolTest {
     }
 
     @Test
+    fun encodesProbeResponse() {
+        assertEquals(
+            "080000000e000000",
+            PtpIpProtocol.encodePacket(
+                type = PtpIpProtocol.PROBE_RESPONSE,
+            ).toHex(),
+        )
+    }
+
+    @Test
     fun readsPacketFromStream() {
         val encoded = PtpIpProtocol.encodePacket(
             type = PtpIpProtocol.END_DATA,

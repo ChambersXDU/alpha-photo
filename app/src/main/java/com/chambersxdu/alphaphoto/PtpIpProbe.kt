@@ -16,6 +16,12 @@ internal class PtpIpProbe(context: Context) {
     private var transactionId = 0
     private var supportedOperations = emptySet<Int>()
 
+    @Volatile
+    private var closed = true
+
+    @Volatile
+    private var eventFailure: Throwable? = null
+
     fun initialize(
         cameraNetwork: CameraNetwork,
         onStatus: (String) -> Unit,
@@ -26,6 +32,9 @@ internal class PtpIpProbe(context: Context) {
             try {
                 check(commandSocket == null)
                 check(eventSocket == null)
+
+                closed = false
+                eventFailure = null
 
                 val host = checkNotNull(cameraNetwork.gateway.hostAddress)
 
@@ -63,6 +72,7 @@ internal class PtpIpProbe(context: Context) {
 
                 val event = cameraNetwork.network.socketFactory.createSocket()
                 connect(event, host)
+                event.soTimeout = 0
                 eventSocket = event
 
                 sendPacket(
@@ -79,6 +89,7 @@ internal class PtpIpProbe(context: Context) {
                     "PTP/IP event channel ready host=$host port=${PtpIpProtocol.PORT}",
                 )
 
+                startEventReader(event)
                 bootstrapSonySession()
                 post(onStatus, "Sony transfer session ready.")
                 appContext.mainExecutor.execute { onSuccess() }
@@ -181,12 +192,59 @@ internal class PtpIpProbe(context: Context) {
     }
 
     fun close() {
+        closed = true
         commandSocket?.close()
         commandSocket = null
         eventSocket?.close()
         eventSocket = null
         transactionId = 0
         supportedOperations = emptySet()
+        eventFailure = null
+    }
+
+    private fun startEventReader(socket: Socket) {
+        Thread {
+            try {
+                while (!closed) {
+                    val packet = PtpIpProtocol.readPacket(socket.getInputStream())
+
+                    when (packet.type) {
+                        PtpIpProtocol.EVENT -> {
+                            Log.i(
+                                TAG,
+                                "PTP/IP event received bytes=${packet.body.size}",
+                            )
+                        }
+
+                        PtpIpProtocol.PROBE_REQUEST -> {
+                            sendPacket(
+                                socket,
+                                PtpIpProtocol.PROBE_RESPONSE,
+                                byteArrayOf(),
+                            )
+                            Log.i(TAG, "PTP/IP event ProbeRequest acknowledged")
+                        }
+
+                        PtpIpProtocol.PROBE_RESPONSE -> {
+                            Log.i(TAG, "PTP/IP event ProbeResponse received")
+                        }
+
+                        else -> error(
+                            "Unexpected PTP/IP event-channel packet type ${packet.type}.",
+                        )
+                    }
+                }
+            } catch (error: Throwable) {
+                if (!closed) {
+                    eventFailure = error
+                    Log.e(TAG, "PTP/IP event channel failed", error)
+                }
+            }
+        }.apply {
+            name = "AlphaPhotoPtpEvent"
+            isDaemon = true
+            start()
+        }
     }
 
     private fun bootstrapSonySession() {
@@ -269,6 +327,11 @@ internal class PtpIpProbe(context: Context) {
         opcode: Int,
         params: List<Int>,
     ): TransactionResult {
+        val failure = eventFailure
+        check(failure == null) {
+            "PTP/IP event channel failed: ${failure?.message}"
+        }
+
         val socket = checkNotNull(commandSocket)
         val currentTransactionId = transactionId++
 
@@ -311,6 +374,19 @@ internal class PtpIpProbe(context: Context) {
                         data = concatenate(data),
                         params = response.params,
                     )
+                }
+
+                PtpIpProtocol.PROBE_REQUEST -> {
+                    sendPacket(
+                        socket,
+                        PtpIpProtocol.PROBE_RESPONSE,
+                        byteArrayOf(),
+                    )
+                    Log.i(TAG, "PTP/IP command ProbeRequest acknowledged")
+                }
+
+                PtpIpProtocol.PROBE_RESPONSE -> {
+                    Log.i(TAG, "PTP/IP command ProbeResponse received")
                 }
 
                 else -> error(

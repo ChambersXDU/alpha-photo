@@ -26,9 +26,12 @@ internal object PtpIpProtocol {
     const val INIT_FAIL = 5
     const val OPERATION_REQUEST = 6
     const val OPERATION_RESPONSE = 7
+    const val EVENT = 8
     const val START_DATA = 9
     const val DATA = 10
     const val END_DATA = 12
+    const val PROBE_REQUEST = 13
+    const val PROBE_RESPONSE = 14
 
     const val PHASE_NO_DATA_OR_DATA_IN = 1
 
