@@ -5,21 +5,41 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
 import android.net.MacAddress
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
-import java.util.ArrayDeque
 import java.util.UUID
+
+data class CameraWifiCredentials(
+    val ssid: String,
+    val password: String,
+    val bssid: String,
+)
 
 class GattInspector(context: Context) {
     private val appContext = context.applicationContext
     private val bluetoothManager = appContext.getSystemService(BluetoothManager::class.java)
+    private val handler = Handler(Looper.getMainLooper())
+
     private var gatt: BluetoothGatt? = null
-    private val pendingReads = ArrayDeque<UUID>()
-    private var readStatus: ((String) -> Unit)? = null
+    private var bootstrapState = BootstrapState.IDLE
+    private var onStatus: ((String) -> Unit)? = null
+    private var onCredentials: ((CameraWifiCredentials) -> Unit)? = null
+
+    private var ssid = ""
+    private var password = ""
+
+    private val wifiLaunchTimeout = Runnable {
+        if (bootstrapState == BootstrapState.WAITING_FOR_WIFI) {
+            fail("Camera Wi-Fi launch timed out.")
+        }
+    }
 
     @SuppressLint("MissingPermission")
     fun bondState(address: MacAddress): Int =
@@ -28,96 +48,45 @@ class GattInspector(context: Context) {
             .bondState
 
     @SuppressLint("MissingPermission")
-    fun createBond(
+    fun connectAndGetWifiCredentials(
         address: MacAddress,
         onStatus: (String) -> Unit,
-    ) {
-        val device = bluetoothManager.adapter.getRemoteDevice(address.toByteArray())
-        Log.i(TAG, "Bluetooth bond requested address=$address currentState=${device.bondState}")
-
-        val started = device.createBond()
-        Log.i(TAG, "Bluetooth createBond requested=$started")
-        postStatus(onStatus, "Bluetooth bond requested. Watch the system pairing UI.")
-    }
-
-    @SuppressLint("MissingPermission")
-    fun connect(
-        address: MacAddress,
-        onStatus: (String) -> Unit,
-        onReady: () -> Unit,
+        onCredentials: (CameraWifiCredentials) -> Unit,
     ) {
         check(gatt == null)
+        check(bootstrapState == BootstrapState.IDLE)
+
+        this.onStatus = onStatus
+        this.onCredentials = onCredentials
 
         val device = bluetoothManager.adapter.getRemoteDevice(address.toByteArray())
         Log.i(
             TAG,
             "GATT connect requested address=$address bondState=${device.bondState}",
         )
+        postStatus("Connecting to camera over Bluetooth…")
 
         gatt = device.connectGatt(
             appContext,
             false,
-            callback(onStatus, onReady),
+            callback,
             BluetoothDevice.TRANSPORT_LE,
         )
     }
 
     @SuppressLint("MissingPermission")
-    fun readCameraWifiInfo(onStatus: (String) -> Unit) {
-        check(pendingReads.isEmpty())
-
-        val currentGatt = checkNotNull(gatt)
-        val service = checkNotNull(currentGatt.getService(CAMERA_CONTROL_SERVICE))
-
-        for (uuid in WIFI_INFO_CHARACTERISTICS) {
-            checkNotNull(service.getCharacteristic(uuid))
-            pendingReads.addLast(uuid)
-        }
-
-        readStatus = onStatus
-        postStatus(onStatus, "Reading Sony Wi-Fi characteristics…")
-        readNext(currentGatt)
-    }
-
-    @SuppressLint("MissingPermission")
-    fun startCameraWifi(onStatus: (String) -> Unit) {
-        check(pendingReads.isEmpty())
-
-        val currentGatt = checkNotNull(gatt)
-        val service = checkNotNull(currentGatt.getService(CAMERA_CONTROL_SERVICE))
-        val characteristic = checkNotNull(service.getCharacteristic(WIFI_START_CHARACTERISTIC))
-
-        val requestStatus = currentGatt.writeCharacteristic(
-            characteristic,
-            byteArrayOf(0x01),
-            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
-        )
-
-        Log.i(
-            TAG,
-            "GATT write requested uuid=$WIFI_START_CHARACTERISTIC value=01 " +
-                "requestStatus=$requestStatus",
-        )
-
-        if (requestStatus == BluetoothStatusCodes.SUCCESS) {
-            postStatus(onStatus, "Sony Wi-Fi start command sent.")
-        } else {
-            postStatus(onStatus, "Sony Wi-Fi start request failed. status=$requestStatus")
-        }
-    }
-
-    @SuppressLint("MissingPermission")
     fun close() {
-        pendingReads.clear()
-        readStatus = null
+        handler.removeCallbacks(wifiLaunchTimeout)
         gatt?.close()
         gatt = null
+        bootstrapState = BootstrapState.IDLE
+        onStatus = null
+        onCredentials = null
+        ssid = ""
+        password = ""
     }
 
-    private fun callback(
-        onStatus: (String) -> Unit,
-        onReady: () -> Unit,
-    ) = object : BluetoothGattCallback() {
+    private val callback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(
             gatt: BluetoothGatt,
             status: Int,
@@ -127,13 +96,14 @@ class GattInspector(context: Context) {
 
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
-                    postStatus(onStatus, "GATT connected. Discovering services…")
+                    postStatus("Bluetooth connected. Discovering Sony services…")
                     val started = gatt.discoverServices()
                     Log.i(TAG, "GATT discoverServices requested=$started")
+                    check(started)
                 }
 
                 BluetoothProfile.STATE_DISCONNECTED -> {
-                    postStatus(onStatus, "GATT disconnected. status=$status")
+                    fail("Bluetooth disconnected. status=$status")
                 }
             }
         }
@@ -146,36 +116,33 @@ class GattInspector(context: Context) {
                 TAG,
                 "GATT services discovered status=$status count=${gatt.services.size}",
             )
+            check(status == BluetoothGatt.GATT_SUCCESS)
 
-            for (service in gatt.services) {
-                Log.i(TAG, "GATT service uuid=${service.uuid}")
+            val service = checkNotNull(gatt.getService(CAMERA_CONTROL_SERVICE))
+            checkNotNull(service.getCharacteristic(WIFI_STATUS_CHARACTERISTIC))
+            checkNotNull(service.getCharacteristic(WIFI_START_CHARACTERISTIC))
+            checkNotNull(service.getCharacteristic(WIFI_SSID_CHARACTERISTIC))
+            checkNotNull(service.getCharacteristic(WIFI_PASSWORD_CHARACTERISTIC))
+            checkNotNull(service.getCharacteristic(WIFI_BSSID_CHARACTERISTIC))
 
-                for (characteristic in service.characteristics) {
-                    val descriptors = characteristic.descriptors
-                        .joinToString { it.uuid.toString() }
+            Log.i(TAG, "Sony Camera Control service verified")
+            subscribeToWifiStatus(gatt)
+        }
 
-                    Log.i(
-                        TAG,
-                        "GATT characteristic service=${service.uuid} " +
-                            "uuid=${characteristic.uuid} " +
-                            "properties=0x${characteristic.properties.toString(16)} " +
-                            "descriptors=[$descriptors]",
-                    )
-                }
-            }
-
-            if (status == BluetoothGatt.GATT_SUCCESS) {
-                val cameraControl = gatt.getService(CAMERA_CONTROL_SERVICE)
-                if (cameraControl != null) {
-                    Log.i(TAG, "Sony Camera Control service verified")
-                    appContext.mainExecutor.execute(onReady)
-                }
-            }
-
-            postStatus(
-                onStatus,
-                "GATT dump complete. Services: ${gatt.services.size}",
+        override fun onDescriptorWrite(
+            gatt: BluetoothGatt,
+            descriptor: BluetoothGattDescriptor,
+            status: Int,
+        ) {
+            Log.i(
+                TAG,
+                "GATT descriptor write uuid=${descriptor.uuid} status=$status",
             )
+            check(status == BluetoothGatt.GATT_SUCCESS)
+            check(bootstrapState == BootstrapState.ENABLING_STATUS)
+
+            bootstrapState = BootstrapState.READING_STATUS
+            readCharacteristic(gatt, WIFI_STATUS_CHARACTERISTIC)
         }
 
         override fun onCharacteristicRead(
@@ -186,11 +153,66 @@ class GattInspector(context: Context) {
         ) {
             Log.i(
                 TAG,
-                "GATT read result uuid=${characteristic.uuid} status=$status " +
-                    "hex=${value.toHex()} utf8=${value.toString(Charsets.UTF_8)}",
+                "GATT read result uuid=${characteristic.uuid} status=$status hex=${value.toHex()}",
             )
 
-            readNext(gatt)
+            when (characteristic.uuid) {
+                WIFI_STATUS_CHARACTERISTIC -> {
+                    if (status == BluetoothGatt.GATT_SUCCESS) {
+                        val wifiStatus = parseWifiStatus(value)
+                        if (wifiStatus != null) {
+                            handleWifiStatus(gatt, wifiStatus)
+                            return
+                        }
+                    }
+                    startCameraWifi(gatt)
+                }
+
+                WIFI_SSID_CHARACTERISTIC -> {
+                    check(status == BluetoothGatt.GATT_SUCCESS)
+                    ssid = decodeHeaderAscii(value)
+                    check(ssid.isNotEmpty())
+                    Log.i(TAG, "Sony Wi-Fi SSID=$ssid")
+                    bootstrapState = BootstrapState.READING_PASSWORD
+                    readCharacteristic(gatt, WIFI_PASSWORD_CHARACTERISTIC)
+                }
+
+                WIFI_PASSWORD_CHARACTERISTIC -> {
+                    check(status == BluetoothGatt.GATT_SUCCESS)
+                    password = decodeHeaderAscii(value)
+                    check(password.isNotEmpty())
+                    Log.i(TAG, "Sony Wi-Fi password received length=${password.length}")
+                    bootstrapState = BootstrapState.READING_BSSID
+                    readCharacteristic(gatt, WIFI_BSSID_CHARACTERISTIC)
+                }
+
+                WIFI_BSSID_CHARACTERISTIC -> {
+                    val bssid = if (status == BluetoothGatt.GATT_SUCCESS) {
+                        decodePlainAscii(value)
+                    } else {
+                        ""
+                    }
+                    completeCredentials(bssid)
+                }
+            }
+        }
+
+        override fun onCharacteristicChanged(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray,
+        ) {
+            if (characteristic.uuid != WIFI_STATUS_CHARACTERISTIC) {
+                return
+            }
+
+            Log.i(
+                TAG,
+                "GATT notification uuid=${characteristic.uuid} hex=${value.toHex()}",
+            )
+
+            val wifiStatus = parseWifiStatus(value) ?: return
+            handleWifiStatus(gatt, wifiStatus)
         }
 
         override fun onCharacteristicWrite(
@@ -202,57 +224,211 @@ class GattInspector(context: Context) {
                 TAG,
                 "GATT write result uuid=${characteristic.uuid} status=$status",
             )
+
+            if (characteristic.uuid == WIFI_START_CHARACTERISTIC) {
+                check(status == BluetoothGatt.GATT_SUCCESS)
+                bootstrapState = BootstrapState.WAITING_FOR_WIFI
+                handler.postDelayed(wifiLaunchTimeout, WIFI_LAUNCH_TIMEOUT_MS)
+                postStatus("Camera Wi-Fi is starting…")
+            }
         }
     }
 
     @SuppressLint("MissingPermission")
-    private fun readNext(gatt: BluetoothGatt) {
-        val nextUuid = pendingReads.pollFirst()
-        if (nextUuid == null) {
-            val callback = readStatus
-            readStatus = null
-            if (callback != null) {
-                postStatus(callback, "Sony Wi-Fi characteristic read complete.")
-            }
+    private fun subscribeToWifiStatus(gatt: BluetoothGatt) {
+        val service = checkNotNull(gatt.getService(CAMERA_CONTROL_SERVICE))
+        val characteristic = checkNotNull(service.getCharacteristic(WIFI_STATUS_CHARACTERISTIC))
+        val descriptor = checkNotNull(characteristic.getDescriptor(CLIENT_CONFIGURATION_DESCRIPTOR))
+
+        check(gatt.setCharacteristicNotification(characteristic, true))
+
+        bootstrapState = BootstrapState.ENABLING_STATUS
+        val requestStatus = gatt.writeDescriptor(
+            descriptor,
+            BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE,
+        )
+        Log.i(TAG, "GATT enable CC09 notifications requestStatus=$requestStatus")
+        check(requestStatus == BluetoothStatusCodes.SUCCESS)
+        postStatus("Listening for camera Wi-Fi status…")
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startCameraWifi(gatt: BluetoothGatt) {
+        if (
+            bootstrapState == BootstrapState.WAITING_FOR_WIFI ||
+            bootstrapState == BootstrapState.READING_SSID ||
+            bootstrapState == BootstrapState.READING_PASSWORD ||
+            bootstrapState == BootstrapState.READING_BSSID
+        ) {
             return
         }
 
         val service = checkNotNull(gatt.getService(CAMERA_CONTROL_SERVICE))
-        val characteristic = checkNotNull(service.getCharacteristic(nextUuid))
+        val characteristic = checkNotNull(service.getCharacteristic(WIFI_START_CHARACTERISTIC))
 
-        Log.i(TAG, "GATT read requested uuid=$nextUuid")
+        val requestStatus = gatt.writeCharacteristic(
+            characteristic,
+            byteArrayOf(0x01),
+            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+        )
 
-        if (!gatt.readCharacteristic(characteristic)) {
-            Log.e(TAG, "GATT read request rejected uuid=$nextUuid")
-            readNext(gatt)
-        }
+        Log.i(
+            TAG,
+            "GATT write requested uuid=$WIFI_START_CHARACTERISTIC value=01 requestStatus=$requestStatus",
+        )
+        check(requestStatus == BluetoothStatusCodes.SUCCESS)
     }
 
-    private fun postStatus(
-        onStatus: (String) -> Unit,
-        message: String,
+    private fun handleWifiStatus(
+        gatt: BluetoothGatt,
+        status: WifiStatus,
     ) {
-        appContext.mainExecutor.execute {
-            onStatus(message)
+        Log.i(TAG, "Sony Wi-Fi state=${status.state} error=${status.error}")
+
+        if (status.state == WIFI_STATE_LAUNCHED) {
+            handler.removeCallbacks(wifiLaunchTimeout)
+            if (
+                bootstrapState != BootstrapState.READING_SSID &&
+                bootstrapState != BootstrapState.READING_PASSWORD &&
+                bootstrapState != BootstrapState.READING_BSSID &&
+                bootstrapState != BootstrapState.COMPLETE
+            ) {
+                bootstrapState = BootstrapState.READING_SSID
+                postStatus("Camera Wi-Fi is ready. Reading credentials…")
+                readCharacteristic(gatt, WIFI_SSID_CHARACTERISTIC)
+            }
+            return
+        }
+
+        if (bootstrapState == BootstrapState.READING_STATUS) {
+            startCameraWifi(gatt)
         }
     }
+
+    @SuppressLint("MissingPermission")
+    private fun readCharacteristic(
+        gatt: BluetoothGatt,
+        uuid: UUID,
+    ) {
+        val service = checkNotNull(gatt.getService(CAMERA_CONTROL_SERVICE))
+        val characteristic = checkNotNull(service.getCharacteristic(uuid))
+
+        Log.i(TAG, "GATT read requested uuid=$uuid")
+        check(gatt.readCharacteristic(characteristic))
+    }
+
+    private fun completeCredentials(bssid: String) {
+        bootstrapState = BootstrapState.COMPLETE
+        Log.i(TAG, "Sony Wi-Fi credentials ready ssid=$ssid bssid=$bssid")
+        postStatus("Camera Wi-Fi credentials received.")
+
+        val callback = checkNotNull(onCredentials)
+        appContext.mainExecutor.execute {
+            callback(
+                CameraWifiCredentials(
+                    ssid = ssid,
+                    password = password,
+                    bssid = bssid,
+                ),
+            )
+        }
+    }
+
+    private fun fail(message: String) {
+        handler.removeCallbacks(wifiLaunchTimeout)
+        Log.e(TAG, message)
+        postStatus(message)
+    }
+
+    private fun postStatus(message: String) {
+        val callback = onStatus ?: return
+        appContext.mainExecutor.execute {
+            callback(message)
+        }
+    }
+
+    private fun parseWifiStatus(value: ByteArray): WifiStatus? {
+        var offset = 0
+
+        while (offset + 3 < value.size) {
+            val type =
+                ((value[offset + 1].toInt() and 0xFF) shl 8) or
+                    (value[offset + 2].toInt() and 0xFF)
+
+            when (type) {
+                1 -> {
+                    if (offset + 4 >= value.size) {
+                        return null
+                    }
+                    return WifiStatus(
+                        state = value[offset + 3].toInt() and 0xFF,
+                        error = value[offset + 4].toInt() and 0xFF,
+                    )
+                }
+
+                4 -> offset += 6
+                2, 3, 5, 6, 7, 8, 9, 10 -> offset += 4
+                else -> offset += (value[0].toInt() and 0xFF) + 1
+            }
+        }
+
+        return null
+    }
+
+    private fun decodeHeaderAscii(value: ByteArray): String =
+        value.copyOfRange(3, value.size)
+            .toString(Charsets.US_ASCII)
+            .trimEnd('\u0000')
+            .trim()
+
+    private fun decodePlainAscii(value: ByteArray): String =
+        value.toString(Charsets.US_ASCII)
+            .trimEnd('\u0000')
+            .trim()
 
     private fun ByteArray.toHex(): String =
         joinToString(separator = "") { byte -> "%02X".format(byte) }
 
+    private data class WifiStatus(
+        val state: Int,
+        val error: Int,
+    )
+
+    private enum class BootstrapState {
+        IDLE,
+        ENABLING_STATUS,
+        READING_STATUS,
+        WAITING_FOR_WIFI,
+        READING_SSID,
+        READING_PASSWORD,
+        READING_BSSID,
+        COMPLETE,
+    }
+
     private companion object {
         const val TAG = "AlphaPhoto"
+        const val WIFI_STATE_LAUNCHED = 2
+        const val WIFI_LAUNCH_TIMEOUT_MS = 30_000L
 
         val CAMERA_CONTROL_SERVICE: UUID =
             UUID.fromString("8000cc00-cc00-ffff-ffff-ffffffffffff")
 
-        val WIFI_INFO_CHARACTERISTICS = listOf(
-            UUID.fromString("0000cc06-0000-1000-8000-00805f9b34fb"),
-            UUID.fromString("0000cc07-0000-1000-8000-00805f9b34fb"),
-            UUID.fromString("0000cc0c-0000-1000-8000-00805f9b34fb"),
-        )
+        val WIFI_SSID_CHARACTERISTIC: UUID =
+            UUID.fromString("0000cc06-0000-1000-8000-00805f9b34fb")
+
+        val WIFI_PASSWORD_CHARACTERISTIC: UUID =
+            UUID.fromString("0000cc07-0000-1000-8000-00805f9b34fb")
 
         val WIFI_START_CHARACTERISTIC: UUID =
             UUID.fromString("0000cc08-0000-1000-8000-00805f9b34fb")
+
+        val WIFI_STATUS_CHARACTERISTIC: UUID =
+            UUID.fromString("0000cc09-0000-1000-8000-00805f9b34fb")
+
+        val WIFI_BSSID_CHARACTERISTIC: UUID =
+            UUID.fromString("0000cc0c-0000-1000-8000-00805f9b34fb")
+
+        val CLIENT_CONFIGURATION_DESCRIPTOR: UUID =
+            UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
     }
 }
