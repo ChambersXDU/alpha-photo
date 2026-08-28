@@ -167,7 +167,6 @@ internal class PtpIpProbe(context: Context) {
                     file = file,
                     offset = offset,
                     length = length,
-                    includeFileSize = offset == 0L,
                 ),
                 name = "SDIO_GetContentsData",
             )

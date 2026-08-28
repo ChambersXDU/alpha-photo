@@ -87,6 +87,9 @@ internal object SonyMediaProtocol {
                 if (contentType == 0) {
                     return@buildList
                 }
+                require(contentType in CONTENT_TYPES) {
+                    "Unknown Sony content type $contentType."
+                }
 
                 val contentId = cursor.u32().toInt()
                 cursor.u32()
@@ -125,26 +128,20 @@ internal object SonyMediaProtocol {
         file: SonyContentFile,
         offset: Long,
         length: Int,
-        includeFileSize: Boolean,
     ): List<Int> {
         require(offset >= 0)
         require(length in 1..ORIGINAL_CHUNK_SIZE)
 
-        val low = file.uniqueId.toInt()
-        var high = (file.uniqueId ushr 32).toInt()
-
-        if (includeFileSize) {
-            high = high or (1 shl 16)
-        }
-
         return listOf(
-            low,
-            high,
+            file.uniqueId.toInt(),
+            (file.uniqueId ushr 32).toInt(),
             offset.toInt(),
             (offset ushr 32).toInt(),
             length,
         )
     }
+
+    private val CONTENT_TYPES = setOf(1, 4, 8, 16)
 
     private fun parseFile(
         cursor: LittleEndianCursor,

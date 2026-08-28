@@ -106,7 +106,7 @@ class SonyMediaProtocolTest {
         assertEquals(
             listOf(
                 0x11223344,
-                0x02012345,
+                0x02002345,
                 0x55667788,
                 0x00000001,
                 SonyMediaProtocol.ORIGINAL_CHUNK_SIZE,
@@ -115,7 +115,6 @@ class SonyMediaProtocolTest {
                 file = file,
                 offset = 0x0000000155667788L,
                 length = SonyMediaProtocol.ORIGINAL_CHUNK_SIZE,
-                includeFileSize = true,
             ),
         )
     }
