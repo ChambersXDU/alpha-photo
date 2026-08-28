@@ -118,10 +118,11 @@ class PtpIpProbe(context: Context) {
     }
 
     private fun buildInitCommandBody(): ByteArray {
+        val uuid = UUID.randomUUID()
         val guid = ByteBuffer.allocate(16)
             .order(ByteOrder.LITTLE_ENDIAN)
-            .putLong(UUID.randomUUID().mostSignificantBits)
-            .putLong(UUID.randomUUID().leastSignificantBits)
+            .putLong(uuid.mostSignificantBits)
+            .putLong(uuid.leastSignificantBits)
             .array()
 
         val name = "Alpha Photo".toByteArray(Charsets.UTF_16LE)
