@@ -4,6 +4,7 @@
 
 - Do not assume. Surface uncertainty early and explicitly.
 - Before designing a protocol experiment, inspect existing public documentation and implementations first. Use hardware experiments only to validate facts that remain unknown or device-specific.
+- For deterministic logic and regressions, write or update tests before implementation when practical. Keep unit tests and Android lint in CI so device testing is reserved for hardware behavior.
 - Write only the minimum code needed to solve the current problem.
 - Change only what must change.
 - Trust internal code and established invariants. Do not add defensive code for cases that should be impossible.
