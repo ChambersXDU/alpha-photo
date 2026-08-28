@@ -227,7 +227,6 @@ class GattInspector(context: Context) {
 
             if (characteristic.uuid == WIFI_START_CHARACTERISTIC) {
                 check(status == BluetoothGatt.GATT_SUCCESS)
-                bootstrapState = BootstrapState.WAITING_FOR_WIFI
                 handler.postDelayed(wifiLaunchTimeout, WIFI_LAUNCH_TIMEOUT_MS)
                 postStatus("Camera Wi-Fi is starting…")
             }
@@ -266,6 +265,7 @@ class GattInspector(context: Context) {
         val service = checkNotNull(gatt.getService(CAMERA_CONTROL_SERVICE))
         val characteristic = checkNotNull(service.getCharacteristic(WIFI_START_CHARACTERISTIC))
 
+        bootstrapState = BootstrapState.WAITING_FOR_WIFI
         val requestStatus = gatt.writeCharacteristic(
             characteristic,
             byteArrayOf(0x01),
