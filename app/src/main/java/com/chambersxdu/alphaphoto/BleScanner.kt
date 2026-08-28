@@ -30,7 +30,10 @@ class BleScanner(context: Context) {
         check(scanCallback == null)
 
         val adapter = bluetoothManager.adapter
+        Log.i(TAG, "BLE scan start requested adapterState=${adapter.state}")
+
         if (!adapter.isEnabled) {
+            Log.e(TAG, "BLE scan not started because Bluetooth is off")
             onError("Bluetooth is off.")
             return false
         }
@@ -57,6 +60,7 @@ class BleScanner(context: Context) {
 
             override fun onScanFailed(errorCode: Int) {
                 scanCallback = null
+                Log.e(TAG, "BLE scan failed errorCode=$errorCode")
                 onError("BLE scan failed with error code $errorCode.")
             }
         }
@@ -69,6 +73,7 @@ class BleScanner(context: Context) {
                 .build(),
             callback,
         )
+        Log.i(TAG, "BLE scan registration requested")
         return true
     }
 
@@ -77,6 +82,7 @@ class BleScanner(context: Context) {
         val callback = scanCallback ?: return
         bluetoothManager.adapter.bluetoothLeScanner.stopScan(callback)
         scanCallback = null
+        Log.i(TAG, "BLE scan stopped")
     }
 
     private fun ScanResult.toObservation(): BleObservation {
