@@ -7,6 +7,7 @@ import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
 import android.net.MacAddress
 import android.util.Log
@@ -21,6 +22,25 @@ class GattInspector(context: Context) {
     private var readStatus: ((String) -> Unit)? = null
 
     @SuppressLint("MissingPermission")
+    fun bondState(address: MacAddress): Int =
+        bluetoothManager.adapter
+            .getRemoteDevice(address.toByteArray())
+            .bondState
+
+    @SuppressLint("MissingPermission")
+    fun createBond(
+        address: MacAddress,
+        onStatus: (String) -> Unit,
+    ) {
+        val device = bluetoothManager.adapter.getRemoteDevice(address.toByteArray())
+        Log.i(TAG, "Bluetooth bond requested address=$address currentState=${device.bondState}")
+
+        val started = device.createBond()
+        Log.i(TAG, "Bluetooth createBond requested=$started")
+        postStatus(onStatus, "Bluetooth bond requested. Watch the system pairing UI.")
+    }
+
+    @SuppressLint("MissingPermission")
     fun connect(
         address: MacAddress,
         onStatus: (String) -> Unit,
@@ -29,7 +49,10 @@ class GattInspector(context: Context) {
         check(gatt == null)
 
         val device = bluetoothManager.adapter.getRemoteDevice(address.toByteArray())
-        Log.i(TAG, "GATT connect requested address=$address")
+        Log.i(
+            TAG,
+            "GATT connect requested address=$address bondState=${device.bondState}",
+        )
 
         gatt = device.connectGatt(
             appContext,
@@ -54,6 +77,33 @@ class GattInspector(context: Context) {
         readStatus = onStatus
         postStatus(onStatus, "Reading Sony Wi-Fi characteristics…")
         readNext(currentGatt)
+    }
+
+    @SuppressLint("MissingPermission")
+    fun startCameraWifi(onStatus: (String) -> Unit) {
+        check(pendingReads.isEmpty())
+
+        val currentGatt = checkNotNull(gatt)
+        val service = checkNotNull(currentGatt.getService(CAMERA_CONTROL_SERVICE))
+        val characteristic = checkNotNull(service.getCharacteristic(WIFI_START_CHARACTERISTIC))
+
+        val requestStatus = currentGatt.writeCharacteristic(
+            characteristic,
+            byteArrayOf(0x01),
+            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+        )
+
+        Log.i(
+            TAG,
+            "GATT write requested uuid=$WIFI_START_CHARACTERISTIC value=01 " +
+                "requestStatus=$requestStatus",
+        )
+
+        if (requestStatus == BluetoothStatusCodes.SUCCESS) {
+            postStatus(onStatus, "Sony Wi-Fi start command sent.")
+        } else {
+            postStatus(onStatus, "Sony Wi-Fi start request failed. status=$requestStatus")
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -140,17 +190,18 @@ class GattInspector(context: Context) {
                     "hex=${value.toHex()} utf8=${value.toString(Charsets.UTF_8)}",
             )
 
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                pendingReads.clear()
-                val callback = readStatus
-                readStatus = null
-                if (callback != null) {
-                    postStatus(callback, "GATT read failed. status=$status")
-                }
-                return
-            }
-
             readNext(gatt)
+        }
+
+        override fun onCharacteristicWrite(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            status: Int,
+        ) {
+            Log.i(
+                TAG,
+                "GATT write result uuid=${characteristic.uuid} status=$status",
+            )
         }
     }
 
@@ -172,13 +223,8 @@ class GattInspector(context: Context) {
         Log.i(TAG, "GATT read requested uuid=$nextUuid")
 
         if (!gatt.readCharacteristic(characteristic)) {
-            pendingReads.clear()
-            val callback = readStatus
-            readStatus = null
             Log.e(TAG, "GATT read request rejected uuid=$nextUuid")
-            if (callback != null) {
-                postStatus(callback, "GATT read request rejected.")
-            }
+            readNext(gatt)
         }
     }
 
@@ -205,5 +251,8 @@ class GattInspector(context: Context) {
             UUID.fromString("0000cc07-0000-1000-8000-00805f9b34fb"),
             UUID.fromString("0000cc0c-0000-1000-8000-00805f9b34fb"),
         )
+
+        val WIFI_START_CHARACTERISTIC: UUID =
+            UUID.fromString("0000cc08-0000-1000-8000-00805f9b34fb")
     }
 }
