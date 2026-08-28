@@ -5,7 +5,7 @@
 - [x] Bootstrap the Android project
 - [x] Add repository development rules
 - [x] Verify the local Android development environment
-- [ ] Build and install the app on Xiaomi 15
+- [x] Build and install the app on Xiaomi 15
 
 ## Spike A — Wireless connection
 
