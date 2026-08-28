@@ -2,10 +2,10 @@ package com.chambersxdu.alphaphoto
 
 import android.Manifest
 import android.app.Activity
-import android.bluetooth.BluetoothDevice
+import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.MacAddress
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -33,6 +33,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
+private val wirelessPermissions = arrayOf(
+    Manifest.permission.BLUETOOTH_CONNECT,
+    Manifest.permission.NEARBY_WIFI_DEVICES,
+)
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -47,24 +52,29 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun AlphaPhotoApp() {
     val context = LocalContext.current
+
     val associationManager = remember {
         CameraAssociationManager(context.applicationContext)
     }
     val gattInspector = remember {
         GattInspector(context.applicationContext)
     }
+    val wifiConnectionManager = remember {
+        WifiConnectionManager(context.applicationContext)
+    }
+    val ptpIpProbe = remember {
+        PtpIpProbe(context.applicationContext)
+    }
 
     var association by remember {
         mutableStateOf(associationManager.currentAssociation())
     }
-    var pendingGattAddress by remember { mutableStateOf<MacAddress?>(null) }
-    var gattReady by remember { mutableStateOf(false) }
     var status by remember {
         mutableStateOf(
             if (association == null) {
-                "Put the a7C II in smartphone connection mode, then associate it."
+                "Associate the a7C II once to start."
             } else {
-                "Camera association found."
+                "Ready to connect wirelessly."
             },
         )
     }
@@ -72,40 +82,73 @@ private fun AlphaPhotoApp() {
     val associationLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartIntentSenderForResult(),
     ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            status = "Association confirmed. Waiting for Android to finish."
+        status = if (result.resultCode == Activity.RESULT_OK) {
+            "Association confirmed."
         } else {
-            status = "Association dialog closed."
+            "Association dialog closed."
         }
     }
 
-    val connectGatt = { address: MacAddress ->
-        gattReady = false
-        gattInspector.connect(
-            address = address,
-            onStatus = { message ->
-                status = message
-            },
-            onReady = {
-                gattReady = true
-            },
-        )
+    val startWirelessConnection = {
+        val currentAssociation = checkNotNull(association)
+        val address = checkNotNull(currentAssociation.deviceMacAddress)
+
+        if (!wifiConnectionManager.isWifiEnabled()) {
+            status = "Turn on phone Wi-Fi, then tap Connect wirelessly again."
+            context.startActivity(Intent(Settings.Panel.ACTION_WIFI))
+        } else {
+            gattInspector.connectAndGetWifiCredentials(
+                address = address,
+                onStatus = { message ->
+                    status = message
+                },
+                onCredentials = { credentials ->
+                    wifiConnectionManager.connect(
+                        credentials = credentials,
+                        onStatus = { message ->
+                            status = message
+                        },
+                        onConnected = { cameraNetwork ->
+                            ptpIpProbe.initialize(
+                                cameraNetwork = cameraNetwork,
+                                onStatus = { message ->
+                                    status = message
+                                },
+                                onSuccess = {
+                                    status = "Wireless path ready: BLE → Wi-Fi → PTP/IP."
+                                },
+                                onError = { message ->
+                                    status = message
+                                },
+                            )
+                        },
+                        onError = { message ->
+                            status = message
+                        },
+                    )
+                },
+            )
+        }
     }
 
-    val bluetoothPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission(),
-    ) { granted ->
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions(),
+    ) {
+        val granted = wirelessPermissions.all { permission ->
+            context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+        }
+
         if (granted) {
-            connectGatt(checkNotNull(pendingGattAddress))
-            pendingGattAddress = null
+            startWirelessConnection()
         } else {
-            status = "Bluetooth permission is required to inspect GATT."
+            status = "Bluetooth and Nearby Wi-Fi permissions are required."
         }
     }
 
-    DisposableEffect(gattInspector) {
+    DisposableEffect(gattInspector, wifiConnectionManager) {
         onDispose {
             gattInspector.close()
+            wifiConnectionManager.release()
         }
     }
 
@@ -123,7 +166,7 @@ private fun AlphaPhotoApp() {
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
-                    text = "Sony wireless bootstrap spike",
+                    text = "Sony wireless connection spike",
                     style = MaterialTheme.typography.bodyLarge,
                 )
                 Text(
@@ -132,109 +175,57 @@ private fun AlphaPhotoApp() {
                 )
 
                 if (association != null) {
-                    val address = checkNotNull(association?.deviceMacAddress)
-                    val bondState = if (
-                        context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) ==
-                        PackageManager.PERMISSION_GRANTED
-                    ) {
-                        gattInspector.bondState(address)
-                    } else {
-                        BluetoothDevice.BOND_NONE
-                    }
-
                     Text(
-                        text = "${association?.displayName} · $address · bond=$bondState",
+                        text = "${association?.displayName} · ${association?.deviceMacAddress}",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
 
-                Button(
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = {
-                        associationManager.associate(
-                            onPending = { intentSender ->
-                                associationLauncher.launch(
-                                    IntentSenderRequest.Builder(intentSender).build(),
-                                )
-                            },
-                            onCreated = { info ->
-                                association = info
-                                status = "Associated ${info.displayName}."
-                            },
-                            onFailure = { message ->
-                                status = "Association failed: $message"
-                            },
-                        )
-                    },
-                ) {
-                    Text("Associate a7C II")
-                }
-
-                Button(
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = association != null,
-                    onClick = {
-                        val address = checkNotNull(
-                            checkNotNull(association).deviceMacAddress,
-                        )
-                        gattInspector.createBond(address) { message ->
-                            status = message
-                        }
-                    },
-                ) {
-                    Text("Create Bluetooth bond")
-                }
-
-                Button(
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = association != null,
-                    onClick = {
-                        val address = checkNotNull(
-                            checkNotNull(association).deviceMacAddress,
-                        )
-
-                        if (
-                            context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) ==
-                            PackageManager.PERMISSION_GRANTED
-                        ) {
-                            connectGatt(address)
-                        } else {
-                            pendingGattAddress = address
-                            bluetoothPermissionLauncher.launch(
-                                Manifest.permission.BLUETOOTH_CONNECT,
+                if (association == null) {
+                    Button(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            associationManager.associate(
+                                onPending = { intentSender ->
+                                    associationLauncher.launch(
+                                        IntentSenderRequest.Builder(intentSender).build(),
+                                    )
+                                },
+                                onCreated = { info ->
+                                    association = info
+                                    status = "Associated ${info.displayName}."
+                                },
+                                onFailure = { message ->
+                                    status = "Association failed: $message"
+                                },
                             )
-                        }
-                    },
-                ) {
-                    Text("Dump GATT")
+                        },
+                    ) {
+                        Text("Associate a7C II")
+                    }
                 }
 
                 Button(
                     modifier = Modifier.fillMaxWidth(),
-                    enabled = gattReady,
+                    enabled = association != null,
                     onClick = {
-                        gattInspector.readCameraWifiInfo { message ->
-                            status = message
+                        val permissionsGranted = wirelessPermissions.all { permission ->
+                            context.checkSelfPermission(permission) ==
+                                PackageManager.PERMISSION_GRANTED
                         }
-                    },
-                ) {
-                    Text("Read Wi-Fi info")
-                }
 
-                Button(
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = gattReady,
-                    onClick = {
-                        gattInspector.startCameraWifi { message ->
-                            status = message
+                        if (permissionsGranted) {
+                            startWirelessConnection()
+                        } else {
+                            permissionLauncher.launch(wirelessPermissions)
                         }
                     },
                 ) {
-                    Text("Start camera Wi-Fi")
+                    Text("Connect wirelessly")
                 }
 
                 Text(
-                    text = "Run baseline reads, then the single CC08=01 Wi-Fi experiment, then read again.",
+                    text = "This runs the BLE Wi-Fi handoff, joins the camera network, and initializes PTP/IP.",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
