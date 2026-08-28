@@ -68,7 +68,7 @@ class PtpIpProbe(context: Context) {
                             "PTP/IP event channel ready host=$host port=$PTP_IP_PORT",
                         )
                         post(onStatus, "PTP/IP initialization succeeded.")
-                        post(onSuccess, Unit)
+                        appContext.mainExecutor.execute { onSuccess() }
                     }
                 }
             } catch (error: Throwable) {
