@@ -9,9 +9,14 @@
 
 ## Spike A — Wireless connection
 
-- [ ] Detect Sony a7C II over BLE
-- [ ] Inspect BLE advertisements, services, and characteristics
+- [ ] Prove BLE scan results are delivered on Xiaomi 15
+- [ ] Associate Sony a7C II with CompanionDeviceManager
+- [ ] Observe associated camera presence
+- [ ] Connect to the camera over GATT
+- [ ] Dump real a7C II GATT services and characteristics
+- [ ] Verify the Sony Camera Control service on the real camera
 - [ ] Reproduce the Sony BLE-to-Wi-Fi bootstrap
+- [ ] Read the camera Wi-Fi credentials over BLE
 - [ ] Join the camera Wi-Fi with Android networking APIs
 - [ ] Bind camera traffic to the camera network
 - [ ] Establish a PTP/IP session
