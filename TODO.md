@@ -12,9 +12,9 @@
 - [x] Prove BLE scan results are delivered on Xiaomi 15
 - [x] Associate Sony a7C II with CompanionDeviceManager
 - [ ] Observe associated camera presence
-- [ ] Connect to the camera over GATT
-- [ ] Dump real a7C II GATT services and characteristics
-- [ ] Verify the Sony Camera Control service on the real camera
+- [x] Connect to the camera over GATT
+- [x] Dump real a7C II GATT services and characteristics
+- [x] Verify the Sony Camera Control service on the real camera
 - [ ] Reproduce the Sony BLE-to-Wi-Fi bootstrap
 - [ ] Read the camera Wi-Fi credentials over BLE
 - [ ] Join the camera Wi-Fi with Android networking APIs
