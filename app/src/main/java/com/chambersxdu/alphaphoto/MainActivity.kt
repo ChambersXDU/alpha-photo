@@ -57,6 +57,7 @@ private fun AlphaPhotoApp() {
         mutableStateOf(associationManager.currentAssociation())
     }
     var pendingGattAddress by remember { mutableStateOf<MacAddress?>(null) }
+    var gattReady by remember { mutableStateOf(false) }
     var status by remember {
         mutableStateOf(
             if (association == null) {
@@ -78,9 +79,16 @@ private fun AlphaPhotoApp() {
     }
 
     val connectGatt = { address: MacAddress ->
-        gattInspector.connect(address) { message ->
-            status = message
-        }
+        gattReady = false
+        gattInspector.connect(
+            address = address,
+            onStatus = { message ->
+                status = message
+            },
+            onReady = {
+                gattReady = true
+            },
+        )
     }
 
     val bluetoothPermissionLauncher = rememberLauncherForActivityResult(
@@ -175,8 +183,20 @@ private fun AlphaPhotoApp() {
                     Text("Dump GATT")
                 }
 
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = gattReady,
+                    onClick = {
+                        gattInspector.readCameraWifiInfo { message ->
+                            status = message
+                        }
+                    },
+                ) {
+                    Text("Read Wi-Fi info")
+                }
+
                 Text(
-                    text = "The GATT dump is written to the AlphaPhoto log tag.",
+                    text = "The diagnostic results are written to the AlphaPhoto log tag.",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
