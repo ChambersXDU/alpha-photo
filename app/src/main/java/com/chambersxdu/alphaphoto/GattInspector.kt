@@ -7,6 +7,7 @@ import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.content.Context
+import android.net.MacAddress
 import android.util.Log
 
 class GattInspector(context: Context) {
@@ -16,12 +17,12 @@ class GattInspector(context: Context) {
 
     @SuppressLint("MissingPermission")
     fun connect(
-        address: String,
+        address: MacAddress,
         onStatus: (String) -> Unit,
     ) {
         check(gatt == null)
 
-        val device = bluetoothManager.adapter.getRemoteDevice(address)
+        val device = bluetoothManager.adapter.getRemoteDevice(address.toByteArray())
         Log.i(TAG, "GATT connect requested address=$address")
 
         gatt = device.connectGatt(
