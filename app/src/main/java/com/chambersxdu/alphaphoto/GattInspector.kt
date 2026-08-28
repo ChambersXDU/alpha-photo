@@ -17,9 +17,9 @@ import android.util.Log
 import java.util.UUID
 
 data class CameraWifiCredentials(
-    val ssid: String,
+    val ssid: String?,
     val password: String,
-    val bssid: String,
+    val bssid: String?,
 )
 
 class GattInspector(context: Context) {
@@ -32,7 +32,7 @@ class GattInspector(context: Context) {
     private var onStatus: ((String) -> Unit)? = null
     private var onCredentials: ((CameraWifiCredentials) -> Unit)? = null
 
-    private var ssid = ""
+    private var ssid: String? = null
     private var password = ""
 
     private val wifiLaunchTimeout = Runnable {
@@ -82,7 +82,7 @@ class GattInspector(context: Context) {
         bootstrapState = BootstrapState.IDLE
         onStatus = null
         onCredentials = null
-        ssid = ""
+        ssid = null
         password = ""
     }
 
@@ -99,7 +99,9 @@ class GattInspector(context: Context) {
                     postStatus("Bluetooth connected. Discovering Sony services…")
                     val started = gatt.discoverServices()
                     Log.i(TAG, "GATT discoverServices requested=$started")
-                    check(started)
+                    if (!started) {
+                        fail("Bluetooth service discovery request was rejected.")
+                    }
                 }
 
                 BluetoothProfile.STATE_DISCONNECTED -> {
@@ -116,7 +118,10 @@ class GattInspector(context: Context) {
                 TAG,
                 "GATT services discovered status=$status count=${gatt.services.size}",
             )
-            check(status == BluetoothGatt.GATT_SUCCESS)
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                fail("Bluetooth service discovery failed. status=$status")
+                return
+            }
 
             val service = checkNotNull(gatt.getService(CAMERA_CONTROL_SERVICE))
             checkNotNull(service.getCharacteristic(WIFI_STATUS_CHARACTERISTIC))
@@ -138,9 +143,12 @@ class GattInspector(context: Context) {
                 TAG,
                 "GATT descriptor write uuid=${descriptor.uuid} status=$status",
             )
-            check(status == BluetoothGatt.GATT_SUCCESS)
-            check(bootstrapState == BootstrapState.ENABLING_STATUS)
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                fail("Sony Wi-Fi status subscription failed. status=$status")
+                return
+            }
 
+            check(bootstrapState == BootstrapState.ENABLING_STATUS)
             bootstrapState = BootstrapState.READING_STATUS
             readCharacteristic(gatt, WIFI_STATUS_CHARACTERISTIC)
         }
@@ -169,18 +177,33 @@ class GattInspector(context: Context) {
                 }
 
                 WIFI_SSID_CHARACTERISTIC -> {
-                    check(status == BluetoothGatt.GATT_SUCCESS)
-                    ssid = decodeHeaderAscii(value)
-                    check(ssid.isNotEmpty())
-                    Log.i(TAG, "Sony Wi-Fi SSID=$ssid")
+                    ssid = if (status == BluetoothGatt.GATT_SUCCESS) {
+                        decodeHeaderAscii(value).ifEmpty { null }
+                    } else {
+                        Log.i(TAG, "Sony Wi-Fi SSID unavailable status=$status")
+                        null
+                    }
+
+                    if (ssid != null) {
+                        Log.i(TAG, "Sony Wi-Fi SSID=$ssid")
+                    }
+
                     bootstrapState = BootstrapState.READING_PASSWORD
                     readCharacteristic(gatt, WIFI_PASSWORD_CHARACTERISTIC)
                 }
 
                 WIFI_PASSWORD_CHARACTERISTIC -> {
-                    check(status == BluetoothGatt.GATT_SUCCESS)
+                    if (status != BluetoothGatt.GATT_SUCCESS) {
+                        fail("Sony Wi-Fi password read failed. status=$status")
+                        return
+                    }
+
                     password = decodeHeaderAscii(value)
-                    check(password.isNotEmpty())
+                    if (password.isEmpty()) {
+                        fail("Sony Wi-Fi password was empty.")
+                        return
+                    }
+
                     Log.i(TAG, "Sony Wi-Fi password received length=${password.length}")
                     bootstrapState = BootstrapState.READING_BSSID
                     readCharacteristic(gatt, WIFI_BSSID_CHARACTERISTIC)
@@ -188,10 +211,17 @@ class GattInspector(context: Context) {
 
                 WIFI_BSSID_CHARACTERISTIC -> {
                     val bssid = if (status == BluetoothGatt.GATT_SUCCESS) {
-                        decodePlainAscii(value)
+                        decodePlainAscii(value).ifEmpty { null }
                     } else {
-                        ""
+                        Log.i(TAG, "Sony Wi-Fi BSSID unavailable status=$status")
+                        null
                     }
+
+                    if (ssid == null && bssid == null) {
+                        fail("Camera returned neither SSID nor BSSID.")
+                        return
+                    }
+
                     completeCredentials(bssid)
                 }
             }
@@ -226,7 +256,11 @@ class GattInspector(context: Context) {
             )
 
             if (characteristic.uuid == WIFI_START_CHARACTERISTIC) {
-                check(status == BluetoothGatt.GATT_SUCCESS)
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    fail("Sony Wi-Fi start command failed. status=$status")
+                    return
+                }
+
                 handler.postDelayed(wifiLaunchTimeout, WIFI_LAUNCH_TIMEOUT_MS)
                 postStatus("Camera Wi-Fi is starting…")
             }
@@ -239,7 +273,10 @@ class GattInspector(context: Context) {
         val characteristic = checkNotNull(service.getCharacteristic(WIFI_STATUS_CHARACTERISTIC))
         val descriptor = checkNotNull(characteristic.getDescriptor(CLIENT_CONFIGURATION_DESCRIPTOR))
 
-        check(gatt.setCharacteristicNotification(characteristic, true))
+        if (!gatt.setCharacteristicNotification(characteristic, true)) {
+            fail("Sony Wi-Fi status notification registration failed.")
+            return
+        }
 
         bootstrapState = BootstrapState.ENABLING_STATUS
         val requestStatus = gatt.writeDescriptor(
@@ -247,7 +284,11 @@ class GattInspector(context: Context) {
             BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE,
         )
         Log.i(TAG, "GATT enable CC09 notifications requestStatus=$requestStatus")
-        check(requestStatus == BluetoothStatusCodes.SUCCESS)
+        if (requestStatus != BluetoothStatusCodes.SUCCESS) {
+            fail("Sony Wi-Fi status descriptor write was rejected. status=$requestStatus")
+            return
+        }
+
         postStatus("Listening for camera Wi-Fi status…")
     }
 
@@ -276,7 +317,9 @@ class GattInspector(context: Context) {
             TAG,
             "GATT write requested uuid=$WIFI_START_CHARACTERISTIC value=01 requestStatus=$requestStatus",
         )
-        check(requestStatus == BluetoothStatusCodes.SUCCESS)
+        if (requestStatus != BluetoothStatusCodes.SUCCESS) {
+            fail("Sony Wi-Fi start request was rejected. status=$requestStatus")
+        }
     }
 
     private fun handleWifiStatus(
@@ -314,10 +357,12 @@ class GattInspector(context: Context) {
         val characteristic = checkNotNull(service.getCharacteristic(uuid))
 
         Log.i(TAG, "GATT read requested uuid=$uuid")
-        check(gatt.readCharacteristic(characteristic))
+        if (!gatt.readCharacteristic(characteristic)) {
+            fail("Sony GATT read request was rejected. uuid=$uuid")
+        }
     }
 
-    private fun completeCredentials(bssid: String) {
+    private fun completeCredentials(bssid: String?) {
         bootstrapState = BootstrapState.COMPLETE
         Log.i(TAG, "Sony Wi-Fi credentials ready ssid=$ssid bssid=$bssid")
         postStatus("Camera Wi-Fi credentials received.")
@@ -375,11 +420,16 @@ class GattInspector(context: Context) {
         return null
     }
 
-    private fun decodeHeaderAscii(value: ByteArray): String =
-        value.copyOfRange(3, value.size)
+    private fun decodeHeaderAscii(value: ByteArray): String {
+        if (value.size < 3) {
+            return ""
+        }
+
+        return value.copyOfRange(3, value.size)
             .toString(Charsets.US_ASCII)
             .trimEnd('\u0000')
             .trim()
+    }
 
     private fun decodePlainAscii(value: ByteArray): String =
         value.toString(Charsets.US_ASCII)
