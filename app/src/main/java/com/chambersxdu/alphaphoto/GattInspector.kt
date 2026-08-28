@@ -167,7 +167,7 @@ class GattInspector(context: Context) {
             when (characteristic.uuid) {
                 WIFI_STATUS_CHARACTERISTIC -> {
                     if (status == BluetoothGatt.GATT_SUCCESS) {
-                        val wifiStatus = parseWifiStatus(value)
+                        val wifiStatus = SonyWifiProtocol.parseStatus(value)
                         if (wifiStatus != null) {
                             handleWifiStatus(gatt, wifiStatus)
                             return
@@ -178,7 +178,7 @@ class GattInspector(context: Context) {
 
                 WIFI_SSID_CHARACTERISTIC -> {
                     ssid = if (status == BluetoothGatt.GATT_SUCCESS) {
-                        decodeHeaderAscii(value).ifEmpty { null }
+                        SonyWifiProtocol.decodeHeaderAscii(value).ifEmpty { null }
                     } else {
                         Log.i(TAG, "Sony Wi-Fi SSID unavailable status=$status")
                         null
@@ -198,7 +198,7 @@ class GattInspector(context: Context) {
                         return
                     }
 
-                    password = decodeHeaderAscii(value)
+                    password = SonyWifiProtocol.decodeHeaderAscii(value)
                     if (password.isEmpty()) {
                         fail("Sony Wi-Fi password was empty.")
                         return
@@ -211,7 +211,7 @@ class GattInspector(context: Context) {
 
                 WIFI_BSSID_CHARACTERISTIC -> {
                     val bssid = if (status == BluetoothGatt.GATT_SUCCESS) {
-                        decodePlainAscii(value).ifEmpty { null }
+                        SonyWifiProtocol.decodePlainAscii(value).ifEmpty { null }
                     } else {
                         Log.i(TAG, "Sony Wi-Fi BSSID unavailable status=$status")
                         null
@@ -241,7 +241,7 @@ class GattInspector(context: Context) {
                 "GATT notification uuid=${characteristic.uuid} hex=${value.toHex()}",
             )
 
-            val wifiStatus = parseWifiStatus(value) ?: return
+            val wifiStatus = SonyWifiProtocol.parseStatus(value) ?: return
             handleWifiStatus(gatt, wifiStatus)
         }
 
@@ -324,7 +324,7 @@ class GattInspector(context: Context) {
 
     private fun handleWifiStatus(
         gatt: BluetoothGatt,
-        status: WifiStatus,
+        status: SonyWifiStatus,
     ) {
         Log.i(TAG, "Sony Wi-Fi state=${status.state} error=${status.error}")
 
@@ -392,57 +392,8 @@ class GattInspector(context: Context) {
         }
     }
 
-    private fun parseWifiStatus(value: ByteArray): WifiStatus? {
-        var offset = 0
-
-        while (offset + 3 < value.size) {
-            val type =
-                ((value[offset + 1].toInt() and 0xFF) shl 8) or
-                    (value[offset + 2].toInt() and 0xFF)
-
-            when (type) {
-                1 -> {
-                    if (offset + 4 >= value.size) {
-                        return null
-                    }
-                    return WifiStatus(
-                        state = value[offset + 3].toInt() and 0xFF,
-                        error = value[offset + 4].toInt() and 0xFF,
-                    )
-                }
-
-                4 -> offset += 6
-                2, 3, 5, 6, 7, 8, 9, 10 -> offset += 4
-                else -> offset += (value[0].toInt() and 0xFF) + 1
-            }
-        }
-
-        return null
-    }
-
-    private fun decodeHeaderAscii(value: ByteArray): String {
-        if (value.size < 3) {
-            return ""
-        }
-
-        return value.copyOfRange(3, value.size)
-            .toString(Charsets.US_ASCII)
-            .trimEnd('\u0000')
-            .trim()
-    }
-
-    private fun decodePlainAscii(value: ByteArray): String =
-        value.toString(Charsets.US_ASCII)
-            .trimEnd('\u0000')
-            .trim()
-
     private fun ByteArray.toHex(): String =
         joinToString(separator = "") { byte -> "%02X".format(byte) }
-
-    private data class WifiStatus(
-        val state: Int,
-        val error: Int,
-    )
 
     private enum class BootstrapState {
         IDLE,
