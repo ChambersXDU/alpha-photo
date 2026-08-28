@@ -1,6 +1,5 @@
 package com.chambersxdu.alphaphoto
 
-import android.annotation.SuppressLint
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.LinkProperties
@@ -30,7 +29,6 @@ class WifiConnectionManager(context: Context) {
 
     fun isWifiEnabled(): Boolean = wifiManager.isWifiEnabled
 
-    @SuppressLint("MissingPermission")
     fun connect(
         credentials: CameraWifiCredentials,
         onStatus: (String) -> Unit,
