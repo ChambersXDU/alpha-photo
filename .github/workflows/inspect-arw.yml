@@ -1,0 +1,92 @@
+name: Inspect ARW fixture
+
+on:
+  push:
+    paths:
+      - "assets/**/*.ARW"
+      - ".github/workflows/inspect-arw.yml"
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install inspection tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libimage-exiftool-perl imagemagick
+
+      - name: Inspect ARW
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          raw="assets/ARW-Lossless-L.ARW"
+          out="build/arw-inspection"
+          mkdir -p "$out"
+
+          echo "== File =="
+          stat --printf='size=%s bytes\n' "$raw"
+          file "$raw"
+
+          echo
+          echo "== Selected metadata =="
+          exiftool -G1 -a -s \
+            -Make \
+            -Model \
+            -CameraModelName \
+            -RawFileType \
+            -SonyRawFileType \
+            -Compression \
+            -BitsPerSample \
+            -ImageWidth \
+            -ImageHeight \
+            -ExifImageWidth \
+            -ExifImageHeight \
+            -PreviewImageStart \
+            -PreviewImageLength \
+            -PreviewImageSize \
+            -JpgFromRawStart \
+            -JpgFromRawLength \
+            -JpgFromRaw \
+            -ThumbnailOffset \
+            -ThumbnailLength \
+            -ThumbnailImage \
+            "$raw" | tee "$out/selected-metadata.txt"
+
+          exiftool -G1 -a -s "$raw" > "$out/all-metadata.txt"
+
+          extract_preview() {
+            local tag="$1"
+            local name="$2"
+            local tmp="$out/$name.tmp"
+            local dst="$out/$name.jpg"
+
+            exiftool -b "-$tag" "$raw" > "$tmp"
+            if [ -s "$tmp" ]; then
+              mv "$tmp" "$dst"
+              echo "$tag:"
+              stat --printf='  bytes=%s\n' "$dst"
+              identify -format '  dimensions=%wx%h\n' "$dst"
+              file "$dst"
+            else
+              rm "$tmp"
+              echo "$tag: absent"
+            fi
+          }
+
+          echo
+          echo "== Embedded JPEGs =="
+          extract_preview ThumbnailImage thumbnail
+          extract_preview PreviewImage preview
+          extract_preview JpgFromRaw jpg-from-raw
+
+      - name: Upload inspection output
+        uses: actions/upload-artifact@v4
+        with:
+          name: arw-inspection
+          path: build/arw-inspection/
+          if-no-files-found: error
