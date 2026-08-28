@@ -10,7 +10,7 @@
 ## Spike A — Wireless connection
 
 - [x] Prove BLE scan results are delivered on Xiaomi 15
-- [ ] Associate Sony a7C II with CompanionDeviceManager
+- [x] Associate Sony a7C II with CompanionDeviceManager
 - [ ] Observe associated camera presence
 - [ ] Connect to the camera over GATT
 - [ ] Dump real a7C II GATT services and characteristics
