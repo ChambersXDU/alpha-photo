@@ -2,6 +2,7 @@ package com.chambersxdu.alphaphoto
 
 import android.Manifest
 import android.app.Activity
+import android.bluetooth.BluetoothDevice
 import android.content.pm.PackageManager
 import android.net.MacAddress
 import android.os.Bundle
@@ -122,7 +123,7 @@ private fun AlphaPhotoApp() {
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
-                    text = "Sony companion association spike",
+                    text = "Sony wireless bootstrap spike",
                     style = MaterialTheme.typography.bodyLarge,
                 )
                 Text(
@@ -131,8 +132,18 @@ private fun AlphaPhotoApp() {
                 )
 
                 if (association != null) {
+                    val address = checkNotNull(association?.deviceMacAddress)
+                    val bondState = if (
+                        context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) ==
+                        PackageManager.PERMISSION_GRANTED
+                    ) {
+                        gattInspector.bondState(address)
+                    } else {
+                        BluetoothDevice.BOND_NONE
+                    }
+
                     Text(
-                        text = "${association?.displayName} · ${association?.deviceMacAddress}",
+                        text = "${association?.displayName} · $address · bond=$bondState",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
@@ -157,6 +168,21 @@ private fun AlphaPhotoApp() {
                     },
                 ) {
                     Text("Associate a7C II")
+                }
+
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = association != null,
+                    onClick = {
+                        val address = checkNotNull(
+                            checkNotNull(association).deviceMacAddress,
+                        )
+                        gattInspector.createBond(address) { message ->
+                            status = message
+                        }
+                    },
+                ) {
+                    Text("Create Bluetooth bond")
                 }
 
                 Button(
@@ -195,8 +221,20 @@ private fun AlphaPhotoApp() {
                     Text("Read Wi-Fi info")
                 }
 
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = gattReady,
+                    onClick = {
+                        gattInspector.startCameraWifi { message ->
+                            status = message
+                        }
+                    },
+                ) {
+                    Text("Start camera Wi-Fi")
+                }
+
                 Text(
-                    text = "The diagnostic results are written to the AlphaPhoto log tag.",
+                    text = "Run baseline reads, then the single CC08=01 Wi-Fi experiment, then read again.",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
