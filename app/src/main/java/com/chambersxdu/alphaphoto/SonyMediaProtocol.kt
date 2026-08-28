@@ -31,13 +31,20 @@ internal object SonyMediaProtocol {
     const val OP_SDIO_CONNECT = 0x9201
     const val OP_SDIO_GET_EXT_DEVICE_INFO = 0x9202
     const val OP_SDIO_OPEN_SESSION = 0x9210
+    const val OP_SDIO_SET_CONTENTS_TRANSFER_MODE = 0x9212
     const val OP_SDIO_GET_VENDOR_CODE_VERSION = 0x9216
     const val OP_SDIO_GET_CAPTURED_DATE_LIST = 0x923B
     const val OP_SDIO_GET_CONTENTS_INFO_LIST = 0x923C
     const val OP_SDIO_GET_CONTENTS_DATA = 0x923D
+    const val OP_SDIO_GET_CONTENTS_COMPRESSED_DATA = 0x923E
 
     const val RESPONSE_OK = 0x2001
     const val FUNCTION_MODE_CONTENTS_TRANSFER = 1
+    const val CONTENTS_SELECT_REMOTE_DEVICE = 2
+    const val CONTENTS_TRANSFER_ON = 1
+    const val CONTENTS_INFO_NONE = 0
+    const val COMPRESSED_DATA_THUMBNAIL = 1
+    const val COMPRESSED_DATA_SCREENNAIL = 2
     const val VENDOR_FLAG_THRESHOLD = 310
     const val ORIGINAL_CHUNK_SIZE = 3_145_728
 
@@ -121,6 +128,22 @@ internal object SonyMediaProtocol {
         return SonyContentsList(
             slotId = slotId,
             files = files,
+        )
+    }
+
+    fun compressedDataParams(
+        file: SonyContentFile,
+        type: Int,
+    ): List<Int> {
+        require(
+            type == COMPRESSED_DATA_THUMBNAIL ||
+                type == COMPRESSED_DATA_SCREENNAIL,
+        )
+
+        return listOf(
+            file.uniqueId.toInt(),
+            (file.uniqueId ushr 32).toInt(),
+            type,
         )
     }
 

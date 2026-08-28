@@ -91,6 +91,32 @@ class SonyMediaProtocolTest {
     }
 
     @Test
+    fun buildsCompressedDataParameters() {
+        val file = SonyContentFile(
+            slotId = 2,
+            contentId = 0x11223344,
+            fileId = 0x2345,
+            path = "/a.ARW",
+            formatCode = 0xB101,
+            size = 10_000_000,
+            width = 7008,
+            height = 4672,
+        )
+
+        assertEquals(
+            listOf(
+                0x11223344,
+                0x02002345,
+                SonyMediaProtocol.COMPRESSED_DATA_SCREENNAIL,
+            ),
+            SonyMediaProtocol.compressedDataParams(
+                file = file,
+                type = SonyMediaProtocol.COMPRESSED_DATA_SCREENNAIL,
+            ),
+        )
+    }
+
+    @Test
     fun buildsOriginalChunkParameters() {
         val file = SonyContentFile(
             slotId = 2,

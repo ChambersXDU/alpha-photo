@@ -298,6 +298,24 @@ internal class PtpIpProbe(context: Context) {
         )
 
         sdioConnect(3)
+
+        check(
+            SonyMediaProtocol.OP_SDIO_SET_CONTENTS_TRANSFER_MODE in
+                supportedOperations,
+        ) {
+            "Camera does not expose Sony content-transfer operation 0x9212."
+        }
+
+        transactChecked(
+            opcode = SonyMediaProtocol.OP_SDIO_SET_CONTENTS_TRANSFER_MODE,
+            params = listOf(
+                SonyMediaProtocol.CONTENTS_SELECT_REMOTE_DEVICE,
+                SonyMediaProtocol.CONTENTS_TRANSFER_ON,
+                SonyMediaProtocol.CONTENTS_INFO_NONE,
+            ),
+            name = "SDIO_SetContentsTransferMode",
+        )
+        Log.i(TAG, "Sony remote-device content transfer enabled")
         Log.i(TAG, "Sony PTP transfer session ready")
     }
 
