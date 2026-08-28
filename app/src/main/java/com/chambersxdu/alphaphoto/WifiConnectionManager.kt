@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.LinkProperties
+import android.net.MacAddress
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
@@ -43,10 +44,15 @@ class WifiConnectionManager(context: Context) {
             return
         }
 
-        val specifier = WifiNetworkSpecifier.Builder()
-            .setSsid(credentials.ssid)
+        val specifierBuilder = WifiNetworkSpecifier.Builder()
             .setWpa2Passphrase(credentials.password)
-            .build()
+
+        credentials.ssid?.let(specifierBuilder::setSsid)
+        credentials.bssid?.let { bssid ->
+            specifierBuilder.setBssid(MacAddress.fromString(bssid))
+        }
+
+        val specifier = specifierBuilder.build()
 
         val request = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
