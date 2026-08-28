@@ -3,6 +3,7 @@ package com.chambersxdu.alphaphoto
 import android.Manifest
 import android.app.Activity
 import android.content.pm.PackageManager
+import android.net.MacAddress
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -55,7 +56,7 @@ private fun AlphaPhotoApp() {
     var association by remember {
         mutableStateOf(associationManager.currentAssociation())
     }
-    var pendingGattAddress by remember { mutableStateOf<String?>(null) }
+    var pendingGattAddress by remember { mutableStateOf<MacAddress?>(null) }
     var status by remember {
         mutableStateOf(
             if (association == null) {
@@ -76,7 +77,7 @@ private fun AlphaPhotoApp() {
         }
     }
 
-    val connectGatt = { address: String ->
+    val connectGatt = { address: MacAddress ->
         gattInspector.connect(address) { message ->
             status = message
         }
@@ -156,7 +157,7 @@ private fun AlphaPhotoApp() {
                     onClick = {
                         val address = checkNotNull(
                             checkNotNull(association).deviceMacAddress,
-                        ).toString()
+                        )
 
                         if (
                             context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) ==
