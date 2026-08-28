@@ -34,9 +34,9 @@
 
 ## Spike C — RAW experience
 
-- [ ] Inspect embedded previews from real a7C II RAW files
+- [x] Inspect embedded previews from real a7C II RAW files
 - [ ] Test Compressed RAW
-- [ ] Test Lossless Compressed RAW L
+- [x] Test Lossless Compressed RAW L
 - [ ] Test Lossless Compressed RAW M
 - [ ] Test Lossless Compressed RAW S
 - [ ] Test Uncompressed RAW
