@@ -3,6 +3,7 @@
 ## Working principles
 
 - Do not assume. Surface uncertainty early and explicitly.
+- Before designing a protocol experiment, inspect existing public documentation and implementations first. Use hardware experiments only to validate facts that remain unknown or device-specific.
 - Write only the minimum code needed to solve the current problem.
 - Change only what must change.
 - Trust internal code and established invariants. Do not add defensive code for cases that should be impossible.
