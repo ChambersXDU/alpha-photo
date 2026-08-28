@@ -3,15 +3,18 @@ package com.chambersxdu.alphaphoto
 import android.content.Context
 import android.net.Network
 import android.util.Log
-import java.io.InputStream
+import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import java.util.UUID
+import java.security.SecureRandom
 
 class PtpIpProbe(context: Context) {
     private val appContext = context.applicationContext
+
+    private var commandSocket: Socket? = null
+    private var eventSocket: Socket? = null
+    private var transactionId = 0
+    private var supportedOperations = emptySet<Int>()
 
     fun initialize(
         cameraNetwork: CameraNetwork,
@@ -21,62 +24,301 @@ class PtpIpProbe(context: Context) {
     ) {
         Thread {
             try {
-                val host = cameraNetwork.gateway.hostAddress
-                checkNotNull(host)
+                check(commandSocket == null)
+                check(eventSocket == null)
+
+                val host = checkNotNull(cameraNetwork.gateway.hostAddress)
 
                 post(onStatus, "Waiting for Sony PTP/IP…")
                 waitForPort(cameraNetwork.network, host)
 
-                cameraNetwork.network.socketFactory.createSocket().use { commandSocket ->
-                    connect(commandSocket, host)
+                val command = cameraNetwork.network.socketFactory.createSocket()
+                connect(command, host)
+                commandSocket = command
 
-                    val commandBody = buildInitCommandBody()
-                    sendPacket(commandSocket, INIT_COMMAND_REQUEST, commandBody)
+                val guid = ByteArray(16).also(SecureRandom()::nextBytes)
+                sendPacket(
+                    command,
+                    PtpIpProtocol.INIT_COMMAND_REQUEST,
+                    PtpIpProtocol.initCommandBody(guid, "Alpha Photo"),
+                )
 
-                    val commandAck = receivePacket(commandSocket)
-                    if (commandAck.type == INIT_FAIL) {
-                        val reason = if (commandAck.body.size >= 4) {
-                            littleEndianInt(commandAck.body, 0)
-                        } else {
-                            -1
-                        }
-                        error("Sony rejected PTP/IP initialization. reason=$reason")
+                val commandAck = PtpIpProtocol.readPacket(command.getInputStream())
+                if (commandAck.type == PtpIpProtocol.INIT_FAIL) {
+                    val reason = if (commandAck.body.size >= 4) {
+                        LittleEndianCursor(commandAck.body).u32()
+                    } else {
+                        -1
                     }
-                    check(commandAck.type == INIT_COMMAND_ACK)
-                    check(commandAck.body.size >= 4)
-
-                    val connectionNumber = littleEndianInt(commandAck.body, 0)
-                    Log.i(
-                        TAG,
-                        "PTP/IP command channel ready connectionNumber=$connectionNumber",
-                    )
-
-                    cameraNetwork.network.socketFactory.createSocket().use { eventSocket ->
-                        connect(eventSocket, host)
-
-                        sendPacket(
-                            eventSocket,
-                            INIT_EVENT_REQUEST,
-                            littleEndianBytes(connectionNumber),
-                        )
-
-                        val eventAck = receivePacket(eventSocket)
-                        check(eventAck.type == INIT_EVENT_ACK)
-
-                        Log.i(
-                            TAG,
-                            "PTP/IP event channel ready host=$host port=$PTP_IP_PORT",
-                        )
-                        post(onStatus, "PTP/IP initialization succeeded.")
-                        appContext.mainExecutor.execute { onSuccess() }
-                    }
+                    error("Sony rejected PTP/IP initialization. reason=$reason")
                 }
+
+                check(commandAck.type == PtpIpProtocol.INIT_COMMAND_ACK)
+                val connectionNumber =
+                    LittleEndianCursor(commandAck.body).u32().toInt()
+                Log.i(
+                    TAG,
+                    "PTP/IP command channel ready connectionNumber=$connectionNumber",
+                )
+
+                val event = cameraNetwork.network.socketFactory.createSocket()
+                connect(event, host)
+                eventSocket = event
+
+                sendPacket(
+                    event,
+                    PtpIpProtocol.INIT_EVENT_REQUEST,
+                    PtpIpProtocol.littleEndianInt(connectionNumber),
+                )
+
+                val eventAck = PtpIpProtocol.readPacket(event.getInputStream())
+                check(eventAck.type == PtpIpProtocol.INIT_EVENT_ACK)
+
+                Log.i(
+                    TAG,
+                    "PTP/IP event channel ready host=$host port=${PtpIpProtocol.PORT}",
+                )
+
+                bootstrapSonySession()
+                post(onStatus, "Sony transfer session ready.")
+                appContext.mainExecutor.execute { onSuccess() }
             } catch (error: Throwable) {
+                close()
                 val message = "PTP/IP initialization failed: ${error.message}"
                 Log.e(TAG, message, error)
                 post(onError, message)
             }
         }.start()
+    }
+
+    fun listRecentFiles(
+        slot: Int,
+        onStatus: (String) -> Unit,
+        onSuccess: (List<SonyContentFile>) -> Unit,
+        onError: (String) -> Unit,
+    ) {
+        Thread {
+            try {
+                require(slot > 0)
+                post(onStatus, "Listing recent photos from slot $slot…")
+
+                val dates = transactChecked(
+                    opcode = SonyMediaProtocol.OP_SDIO_GET_CAPTURED_DATE_LIST,
+                    params = listOf(slot),
+                    name = "SDIO_GetCapturedDateList",
+                ).data
+
+                val capturedDates = SonyMediaProtocol.parseCapturedDates(dates)
+                if (capturedDates.isEmpty()) {
+                    post(onSuccess, emptyList())
+                    return@Thread
+                }
+
+                val latestDate = capturedDates.max()
+                val contents = transactChecked(
+                    opcode = SonyMediaProtocol.OP_SDIO_GET_CONTENTS_INFO_LIST,
+                    params = SonyMediaProtocol.contentsInfoParams(
+                        captureDate = latestDate,
+                        count = RECENT_CONTENT_LIMIT,
+                        slot = slot,
+                    ),
+                    name = "SDIO_GetContentsInfoList",
+                ).data
+
+                val files = SonyMediaProtocol.parseContentsInfoList(contents).files
+                Log.i(
+                    TAG,
+                    "Sony recent contents slot=$slot dates=${capturedDates.size} files=${files.size}",
+                )
+                files.forEach { file ->
+                    Log.i(
+                        TAG,
+                        "Sony file name=${file.name} format=0x${file.formatCode.toString(16)} " +
+                            "size=${file.size} dimensions=${file.width}x${file.height} " +
+                            "uniqueId=0x${file.uniqueId.toULong().toString(16)}",
+                    )
+                }
+
+                post(onSuccess, files)
+            } catch (error: Throwable) {
+                val message = "Sony contents listing failed: ${error.message}"
+                Log.e(TAG, message, error)
+                post(onError, message)
+            }
+        }.start()
+    }
+
+    fun streamOriginal(
+        file: SonyContentFile,
+        output: OutputStream,
+        onProgress: (Long, Long) -> Unit,
+    ) {
+        var offset = 0L
+
+        while (offset < file.size) {
+            val length = minOf(
+                SonyMediaProtocol.ORIGINAL_CHUNK_SIZE.toLong(),
+                file.size - offset,
+            ).toInt()
+
+            val result = transactChecked(
+                opcode = SonyMediaProtocol.OP_SDIO_GET_CONTENTS_DATA,
+                params = SonyMediaProtocol.originalChunkParams(
+                    file = file,
+                    offset = offset,
+                    length = length,
+                    includeFileSize = offset == 0L,
+                ),
+                name = "SDIO_GetContentsData",
+            )
+
+            check(result.data.isNotEmpty())
+            output.write(result.data)
+            offset += result.data.size
+            onProgress(offset, file.size)
+        }
+
+        check(offset == file.size)
+    }
+
+    fun close() {
+        commandSocket?.close()
+        commandSocket = null
+        eventSocket?.close()
+        eventSocket = null
+        transactionId = 0
+        supportedOperations = emptySet()
+    }
+
+    private fun bootstrapSonySession() {
+        val deviceInfo = transactChecked(
+            opcode = SonyMediaProtocol.OP_GET_DEVICE_INFO,
+            name = "GetDeviceInfo",
+        ).data
+
+        supportedOperations = PtpIpProtocol.parseSupportedOperations(deviceInfo)
+        Log.i(TAG, "PTP supported operations count=${supportedOperations.size}")
+
+        check(SonyMediaProtocol.OP_SDIO_OPEN_SESSION in supportedOperations) {
+            "Camera does not expose Sony transfer-session operation 0x9210."
+        }
+
+        transactChecked(
+            opcode = SonyMediaProtocol.OP_SDIO_OPEN_SESSION,
+            params = listOf(
+                1,
+                SonyMediaProtocol.FUNCTION_MODE_CONTENTS_TRANSFER,
+            ),
+            name = "SDIO_OpenSession",
+        )
+
+        sdioConnect(1)
+        sdioConnect(2)
+
+        var vendorVersion = 0
+        if (SonyMediaProtocol.OP_SDIO_GET_VENDOR_CODE_VERSION in supportedOperations) {
+            val response = transactChecked(
+                opcode = SonyMediaProtocol.OP_SDIO_GET_VENDOR_CODE_VERSION,
+                name = "SDIO_GetVendorCodeVersion",
+            )
+            vendorVersion = response.params.firstOrNull() ?: 0
+        }
+
+        Log.i(TAG, "Sony vendor code version=$vendorVersion")
+
+        val extInfoParams = if (
+            vendorVersion >= SonyMediaProtocol.VENDOR_FLAG_THRESHOLD
+        ) {
+            listOf(300, 1)
+        } else {
+            listOf(300)
+        }
+
+        transactChecked(
+            opcode = SonyMediaProtocol.OP_SDIO_GET_EXT_DEVICE_INFO,
+            params = extInfoParams,
+            name = "SDIO_GetExtDeviceInfo",
+        )
+
+        sdioConnect(3)
+        Log.i(TAG, "Sony PTP transfer session ready")
+    }
+
+    private fun sdioConnect(phase: Int) {
+        transactChecked(
+            opcode = SonyMediaProtocol.OP_SDIO_CONNECT,
+            params = listOf(phase, 0, 0),
+            name = "SDIO_Connect($phase)",
+        )
+        Log.i(TAG, "SDIO_Connect($phase) ok")
+    }
+
+    @Synchronized
+    private fun transactChecked(
+        opcode: Int,
+        params: List<Int> = emptyList(),
+        name: String,
+    ): TransactionResult {
+        val result = transact(opcode, params)
+        check(result.response.code == SonyMediaProtocol.RESPONSE_OK) {
+            "$name failed with response 0x${result.response.code.toString(16)}."
+        }
+        return result
+    }
+
+    private fun transact(
+        opcode: Int,
+        params: List<Int>,
+    ): TransactionResult {
+        val socket = checkNotNull(commandSocket)
+        val currentTransactionId = transactionId++
+
+        sendPacket(
+            socket,
+            PtpIpProtocol.OPERATION_REQUEST,
+            PtpIpProtocol.operationRequestBody(
+                phase = PtpIpProtocol.PHASE_NO_DATA_OR_DATA_IN,
+                opcode = opcode,
+                transactionId = currentTransactionId,
+                params = params,
+            ),
+        )
+
+        val data = ArrayList<ByteArray>()
+
+        while (true) {
+            val packet = PtpIpProtocol.readPacket(socket.getInputStream())
+
+            when (packet.type) {
+                PtpIpProtocol.START_DATA -> {
+                    val cursor = LittleEndianCursor(packet.body)
+                    check(cursor.u32().toInt() == currentTransactionId)
+                }
+
+                PtpIpProtocol.DATA,
+                PtpIpProtocol.END_DATA,
+                -> data += PtpIpProtocol.dataPayload(
+                    packet.body,
+                    currentTransactionId,
+                )
+
+                PtpIpProtocol.OPERATION_RESPONSE -> {
+                    val response =
+                        PtpIpProtocol.parseOperationResponse(packet.body)
+                    check(response.transactionId == currentTransactionId)
+
+                    return TransactionResult(
+                        response = response,
+                        data = concatenate(data),
+                        params = response.params,
+                    )
+                }
+
+                else -> error(
+                    "Unexpected PTP/IP packet type ${packet.type}.",
+                )
+            }
+        }
     }
 
     private fun waitForPort(
@@ -90,7 +332,7 @@ class PtpIpProbe(context: Context) {
             try {
                 network.socketFactory.createSocket().use { socket ->
                     socket.connect(
-                        InetSocketAddress(host, PTP_IP_PORT),
+                        InetSocketAddress(host, PtpIpProtocol.PORT),
                         SOCKET_CONNECT_TIMEOUT_MS,
                     )
                     Log.i(TAG, "Sony PTP/IP port reachable host=$host")
@@ -102,7 +344,9 @@ class PtpIpProbe(context: Context) {
             }
         }
 
-        error("Sony PTP/IP port did not become reachable: ${lastError?.message}")
+        error(
+            "Sony PTP/IP port did not become reachable: ${lastError?.message}",
+        )
     }
 
     private fun connect(
@@ -110,25 +354,11 @@ class PtpIpProbe(context: Context) {
         host: String,
     ) {
         socket.connect(
-            InetSocketAddress(host, PTP_IP_PORT),
+            InetSocketAddress(host, PtpIpProtocol.PORT),
             SOCKET_CONNECT_TIMEOUT_MS,
         )
         socket.soTimeout = SOCKET_READ_TIMEOUT_MS
         socket.tcpNoDelay = true
-    }
-
-    private fun buildInitCommandBody(): ByteArray {
-        val uuid = UUID.randomUUID()
-        val guid = ByteBuffer.allocate(16)
-            .order(ByteOrder.LITTLE_ENDIAN)
-            .putLong(uuid.mostSignificantBits)
-            .putLong(uuid.leastSignificantBits)
-            .array()
-
-        val name = "Alpha Photo".toByteArray(Charsets.UTF_16LE)
-        val version = littleEndianBytes(PTP_IP_VERSION)
-
-        return guid + name + byteArrayOf(0x00, 0x00) + version
     }
 
     private fun sendPacket(
@@ -136,58 +366,24 @@ class PtpIpProbe(context: Context) {
         type: Int,
         body: ByteArray,
     ) {
-        val packet = ByteBuffer.allocate(body.size + 8)
-            .order(ByteOrder.LITTLE_ENDIAN)
-            .putInt(body.size + 8)
-            .putInt(type)
-            .put(body)
-            .array()
-
-        socket.getOutputStream().write(packet)
+        socket.getOutputStream().write(
+            PtpIpProtocol.encodePacket(type, body),
+        )
         socket.getOutputStream().flush()
     }
 
-    private fun receivePacket(socket: Socket): Packet {
-        val input = socket.getInputStream()
-        val header = input.readExactly(8)
-        val buffer = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
-
-        val length = buffer.int
-        val type = buffer.int
-
-        check(length >= 8)
-        return Packet(
-            type = type,
-            body = input.readExactly(length - 8),
-        )
-    }
-
-    private fun InputStream.readExactly(count: Int): ByteArray {
-        val output = ByteArray(count)
+    private fun concatenate(chunks: List<ByteArray>): ByteArray {
+        val size = chunks.sumOf { it.size }
+        val output = ByteArray(size)
         var offset = 0
 
-        while (offset < count) {
-            val read = read(output, offset, count - offset)
-            check(read >= 0)
-            offset += read
+        for (chunk in chunks) {
+            chunk.copyInto(output, offset)
+            offset += chunk.size
         }
 
         return output
     }
-
-    private fun littleEndianBytes(value: Int): ByteArray =
-        ByteBuffer.allocate(4)
-            .order(ByteOrder.LITTLE_ENDIAN)
-            .putInt(value)
-            .array()
-
-    private fun littleEndianInt(
-        value: ByteArray,
-        offset: Int,
-    ): Int =
-        ByteBuffer.wrap(value, offset, 4)
-            .order(ByteOrder.LITTLE_ENDIAN)
-            .int
 
     private fun <T> post(
         callback: (T) -> Unit,
@@ -198,22 +394,15 @@ class PtpIpProbe(context: Context) {
         }
     }
 
-    private data class Packet(
-        val type: Int,
-        val body: ByteArray,
+    private data class TransactionResult(
+        val response: PtpOperationResponse,
+        val data: ByteArray,
+        val params: List<Int>,
     )
 
     private companion object {
         const val TAG = "AlphaPhoto"
-
-        const val PTP_IP_PORT = 15740
-        const val PTP_IP_VERSION = 0x00010000
-
-        const val INIT_COMMAND_REQUEST = 1
-        const val INIT_COMMAND_ACK = 2
-        const val INIT_EVENT_REQUEST = 3
-        const val INIT_EVENT_ACK = 4
-        const val INIT_FAIL = 5
+        const val RECENT_CONTENT_LIMIT = 60
 
         const val SOCKET_CONNECT_TIMEOUT_MS = 2_000
         const val SOCKET_READ_TIMEOUT_MS = 15_000

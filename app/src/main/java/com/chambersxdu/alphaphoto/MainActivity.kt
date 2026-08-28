@@ -69,6 +69,7 @@ private fun AlphaPhotoApp() {
     var association by remember {
         mutableStateOf(associationManager.currentAssociation())
     }
+    var ptpReady by remember { mutableStateOf(false) }
     var status by remember {
         mutableStateOf(
             if (association == null) {
@@ -94,7 +95,8 @@ private fun AlphaPhotoApp() {
         val address = checkNotNull(currentAssociation.deviceMacAddress)
 
         if (!wifiConnectionManager.isWifiEnabled()) {
-            status = "Turn on phone Wi-Fi, then tap Connect wirelessly again."
+            status =
+                "Turn on phone Wi-Fi, then tap Connect wirelessly again."
             context.startActivity(Intent(Settings.Panel.ACTION_WIFI))
         } else {
             gattInspector.connectAndGetWifiCredentials(
@@ -115,7 +117,9 @@ private fun AlphaPhotoApp() {
                                     status = message
                                 },
                                 onSuccess = {
-                                    status = "Wireless path ready: BLE → Wi-Fi → PTP/IP."
+                                    ptpReady = true
+                                    status =
+                                        "Wireless path ready: BLE → Wi-Fi → Sony PTP."
                                 },
                                 onError = { message ->
                                     status = message
@@ -135,18 +139,21 @@ private fun AlphaPhotoApp() {
         contract = ActivityResultContracts.RequestMultiplePermissions(),
     ) {
         val granted = wirelessPermissions.all { permission ->
-            context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+            context.checkSelfPermission(permission) ==
+                PackageManager.PERMISSION_GRANTED
         }
 
         if (granted) {
             startWirelessConnection()
         } else {
-            status = "Bluetooth and Nearby Wi-Fi permissions are required."
+            status =
+                "Bluetooth and Nearby Wi-Fi permissions are required."
         }
     }
 
-    DisposableEffect(gattInspector, wifiConnectionManager) {
+    DisposableEffect(gattInspector, wifiConnectionManager, ptpIpProbe) {
         onDispose {
+            ptpIpProbe.close()
             gattInspector.close()
             wifiConnectionManager.release()
         }
@@ -176,7 +183,8 @@ private fun AlphaPhotoApp() {
 
                 if (association != null) {
                     Text(
-                        text = "${association?.displayName} · ${association?.deviceMacAddress}",
+                        text =
+                            "${association?.displayName} · ${association?.deviceMacAddress}",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
@@ -188,15 +196,19 @@ private fun AlphaPhotoApp() {
                             associationManager.associate(
                                 onPending = { intentSender ->
                                     associationLauncher.launch(
-                                        IntentSenderRequest.Builder(intentSender).build(),
+                                        IntentSenderRequest
+                                            .Builder(intentSender)
+                                            .build(),
                                     )
                                 },
                                 onCreated = { info ->
                                     association = info
-                                    status = "Associated ${info.displayName}."
+                                    status =
+                                        "Associated ${info.displayName}."
                                 },
                                 onFailure = { message ->
-                                    status = "Association failed: $message"
+                                    status =
+                                        "Association failed: $message"
                                 },
                             )
                         },
@@ -209,10 +221,11 @@ private fun AlphaPhotoApp() {
                     modifier = Modifier.fillMaxWidth(),
                     enabled = association != null,
                     onClick = {
-                        val permissionsGranted = wirelessPermissions.all { permission ->
-                            context.checkSelfPermission(permission) ==
-                                PackageManager.PERMISSION_GRANTED
-                        }
+                        val permissionsGranted =
+                            wirelessPermissions.all { permission ->
+                                context.checkSelfPermission(permission) ==
+                                    PackageManager.PERMISSION_GRANTED
+                            }
 
                         if (permissionsGranted) {
                             startWirelessConnection()
@@ -224,8 +237,54 @@ private fun AlphaPhotoApp() {
                     Text("Connect wirelessly")
                 }
 
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = ptpReady,
+                    onClick = {
+                        ptpIpProbe.listRecentFiles(
+                            slot = 1,
+                            onStatus = { message ->
+                                status = message
+                            },
+                            onSuccess = { files ->
+                                status =
+                                    "Slot 1: ${files.size} recent files."
+                            },
+                            onError = { message ->
+                                status = message
+                            },
+                        )
+                    },
+                ) {
+                    Text("List recent files · slot 1")
+                }
+
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = ptpReady,
+                    onClick = {
+                        ptpIpProbe.listRecentFiles(
+                            slot = 2,
+                            onStatus = { message ->
+                                status = message
+                            },
+                            onSuccess = { files ->
+                                status =
+                                    "Slot 2: ${files.size} recent files."
+                            },
+                            onError = { message ->
+                                status = message
+                            },
+                        )
+                    },
+                ) {
+                    Text("List recent files · slot 2")
+                }
+
                 Text(
-                    text = "This runs the BLE Wi-Fi handoff, joins the camera network, and initializes PTP/IP.",
+                    text =
+                        "Connect runs BLE → camera Wi-Fi → full Sony PTP transfer-session setup. " +
+                            "The slot buttons exercise read-only card listing.",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
