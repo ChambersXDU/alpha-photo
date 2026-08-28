@@ -30,6 +30,26 @@ class SonyWifiProtocolTest {
     }
 
     @Test
+    fun parsesImageTransferStateFromCombinedStatus() {
+        assertEquals(
+            1,
+            SonyWifiProtocol.parseImageTransferState(
+                hex("040001020003000201"),
+            ),
+        )
+    }
+
+    @Test
+    fun parsesWifiStatusAfterOtherRecord() {
+        assertEquals(
+            SonyWifiStatus(state = 2, error = 0),
+            SonyWifiProtocol.parseStatus(
+                hex("030002010400010200"),
+            ),
+        )
+    }
+
+    @Test
     fun rejectsTruncatedStatus() {
         assertNull(SonyWifiProtocol.parseStatus(hex("04000102")))
     }

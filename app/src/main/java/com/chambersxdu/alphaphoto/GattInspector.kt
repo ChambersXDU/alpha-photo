@@ -177,6 +177,7 @@ class GattInspector(context: Context) {
             when (characteristic.uuid) {
                 WIFI_STATUS_CHARACTERISTIC -> {
                     if (status == BluetoothGatt.GATT_SUCCESS) {
+                        logCameraStatus(value)
                         val wifiStatus = SonyWifiProtocol.parseStatus(value)
                         if (wifiStatus != null) {
                             handleWifiStatus(gatt, wifiStatus)
@@ -251,6 +252,7 @@ class GattInspector(context: Context) {
                 "GATT notification uuid=${characteristic.uuid} hex=${value.toHex()}",
             )
 
+            logCameraStatus(value)
             val wifiStatus = SonyWifiProtocol.parseStatus(value) ?: return
             handleWifiStatus(gatt, wifiStatus)
         }
@@ -330,6 +332,12 @@ class GattInspector(context: Context) {
         if (requestStatus != BluetoothStatusCodes.SUCCESS) {
             fail("Sony Wi-Fi start request was rejected. status=$requestStatus")
         }
+    }
+
+    private fun logCameraStatus(value: ByteArray) {
+        val imageTransferState =
+            SonyWifiProtocol.parseImageTransferState(value) ?: return
+        Log.i(TAG, "Sony image transfer state=$imageTransferState")
     }
 
     private fun handleWifiStatus(

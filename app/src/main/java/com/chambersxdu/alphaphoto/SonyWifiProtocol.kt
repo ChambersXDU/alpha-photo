@@ -7,32 +7,24 @@ internal data class SonyWifiStatus(
 
 internal object SonyWifiProtocol {
     fun parseStatus(value: ByteArray): SonyWifiStatus? {
-        var offset = 0
-
-        while (offset + 3 < value.size) {
-            val type =
-                ((value[offset + 1].toInt() and 0xFF) shl 8) or
-                    (value[offset + 2].toInt() and 0xFF)
-
-            when (type) {
-                1 -> {
-                    if (offset + 4 >= value.size) {
-                        return null
-                    }
-
-                    return SonyWifiStatus(
-                        state = value[offset + 3].toInt() and 0xFF,
-                        error = value[offset + 4].toInt() and 0xFF,
-                    )
-                }
-
-                4 -> offset += 6
-                2, 3, 5, 6, 7, 8, 9, 10 -> offset += 4
-                else -> offset += (value[0].toInt() and 0xFF) + 1
-            }
+        val payload = payloadForType(value, WIFI_STATUS_TYPE) ?: return null
+        if (payload.size != 2) {
+            return null
         }
 
-        return null
+        return SonyWifiStatus(
+            state = payload[0].toInt() and 0xFF,
+            error = payload[1].toInt() and 0xFF,
+        )
+    }
+
+    fun parseImageTransferState(value: ByteArray): Int? {
+        val payload = payloadForType(value, IMAGE_TRANSFER_TYPE) ?: return null
+        if (payload.size != 1) {
+            return null
+        }
+
+        return payload[0].toInt() and 0xFF
     }
 
     fun decodeHeaderAscii(value: ByteArray): String {
@@ -50,4 +42,38 @@ internal object SonyWifiProtocol {
         value.toString(Charsets.US_ASCII)
             .trimEnd('\u0000')
             .trim()
+
+    private fun payloadForType(
+        value: ByteArray,
+        requestedType: Int,
+    ): ByteArray? {
+        var offset = 0
+
+        while (offset < value.size) {
+            val recordLength = value[offset].toInt() and 0xFF
+            if (recordLength < 2) {
+                return null
+            }
+
+            val end = offset + recordLength + 1
+            if (end > value.size) {
+                return null
+            }
+
+            val type =
+                ((value[offset + 1].toInt() and 0xFF) shl 8) or
+                    (value[offset + 2].toInt() and 0xFF)
+
+            if (type == requestedType) {
+                return value.copyOfRange(offset + 3, end)
+            }
+
+            offset = end
+        }
+
+        return null
+    }
+
+    private const val WIFI_STATUS_TYPE = 1
+    private const val IMAGE_TRANSFER_TYPE = 2
 }
