@@ -1,5 +1,6 @@
 package com.chambersxdu.alphaphoto
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
@@ -10,6 +11,7 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.MacAddress
 import android.os.Handler
 import android.os.Looper
@@ -96,6 +98,14 @@ class GattInspector(context: Context) {
 
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
+                    if (
+                        appContext.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) !=
+                        PackageManager.PERMISSION_GRANTED
+                    ) {
+                        fail("Bluetooth permission was revoked.")
+                        return
+                    }
+
                     postStatus("Bluetooth connected. Discovering Sony services…")
                     val started = gatt.discoverServices()
                     Log.i(TAG, "GATT discoverServices requested=$started")
