@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 private val blePermissions = arrayOf(
     Manifest.permission.BLUETOOTH_SCAN,
     Manifest.permission.BLUETOOTH_CONNECT,
+    Manifest.permission.ACCESS_COARSE_LOCATION,
     Manifest.permission.ACCESS_FINE_LOCATION,
 )
 
@@ -84,7 +85,7 @@ private fun AlphaPhotoApp() {
         if (granted) {
             beginScan()
         } else {
-            status = "Bluetooth and location permissions are required for this discovery test."
+            status = "Bluetooth and precise location permissions are required for this discovery test."
         }
     }
 
