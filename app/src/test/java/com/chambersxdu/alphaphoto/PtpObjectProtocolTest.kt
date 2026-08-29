@@ -66,7 +66,7 @@ class PtpObjectProtocolTest {
             PtpObjectInfo(
                 handle = 0x1234,
                 storageId = 0x00010001,
-                formatCode = PtpObjectProtocol.FORMAT_RAW,
+                formatCode = 0xB101,
                 size = 38_547_456,
                 width = 7008,
                 height = 4672,
