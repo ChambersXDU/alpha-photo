@@ -115,7 +115,14 @@ class GattInspector(context: Context) {
                 }
 
                 BluetoothProfile.STATE_DISCONNECTED -> {
-                    fail("Bluetooth disconnected. status=$status")
+                    if (bootstrapState == BootstrapState.COMPLETE) {
+                        Log.i(
+                            TAG,
+                            "Bluetooth disconnected after Wi-Fi handoff. status=$status",
+                        )
+                    } else {
+                        fail("Bluetooth disconnected. status=$status")
+                    }
                 }
             }
         }
