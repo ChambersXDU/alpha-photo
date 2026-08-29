@@ -3,6 +3,7 @@ package com.chambersxdu.alphaphoto
 import android.content.Context
 import android.net.Network
 import android.util.Log
+import java.io.ByteArrayOutputStream
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -253,6 +254,134 @@ internal class PtpIpProbe(context: Context) {
         check(offset == file.size)
     }
 
+    fun probeMediaTransfer(
+        photos: List<PtpObjectInfo>,
+        onStatus: (String) -> Unit,
+        onSuccess: (String) -> Unit,
+        onError: (String) -> Unit,
+    ) {
+        Thread {
+            try {
+                check(PtpObjectProtocol.OP_GET_THUMB in supportedOperations) {
+                    "Camera does not expose standard GetThumb."
+                }
+                check(PtpObjectProtocol.OP_GET_PARTIAL_OBJECT in supportedOperations) {
+                    "Camera does not expose standard GetPartialObject."
+                }
+                check(PtpObjectProtocol.OP_GET_OBJECT in supportedOperations) {
+                    "Camera does not expose standard GetObject."
+                }
+
+                val jpeg = photos
+                    .filter { photo ->
+                        val name = photo.filename.lowercase()
+                        name.endsWith(".jpg") || name.endsWith(".jpeg")
+                    }
+                    .maxByOrNull(PtpObjectInfo::captureDate)
+                val raw = photos
+                    .filter { photo ->
+                        val name = photo.filename.lowercase()
+                        name.endsWith(".arw") || name.endsWith(".raw")
+                    }
+                    .maxByOrNull(PtpObjectInfo::captureDate)
+                val samples = listOfNotNull(jpeg, raw)
+                    .distinctBy(PtpObjectInfo::handle)
+
+                check(samples.isNotEmpty()) {
+                    "Camera listing contains no JPEG or RAW sample."
+                }
+
+                post(onStatus, "Probing thumbnails and partial transfers…")
+
+                for (photo in samples) {
+                    val thumbnail = transactChecked(
+                        opcode = PtpObjectProtocol.OP_GET_THUMB,
+                        params = listOf(photo.handle),
+                        name = "GetThumb(${photo.filename})",
+                    ).data
+
+                    Log.i(
+                        TAG,
+                        "PTP thumb name=${photo.filename} bytes=${thumbnail.size}",
+                    )
+
+                    val partialSize = minOf(
+                        MEDIA_PROBE_PARTIAL_BYTES,
+                        photo.size.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                    )
+                    val partialOutput = ByteArrayOutputStream(partialSize)
+                    val partial = transactCheckedTo(
+                        opcode = PtpObjectProtocol.OP_GET_PARTIAL_OBJECT,
+                        params = PtpObjectProtocol.partialObjectParams(
+                            handle = photo.handle,
+                            offset = 0,
+                            maxBytes = partialSize,
+                        ),
+                        name = "GetPartialObject(${photo.filename})",
+                        output = partialOutput,
+                    )
+
+                    Log.i(
+                        TAG,
+                        "PTP partial name=${photo.filename} " +
+                            "bytes=${partial.dataLength} " +
+                            "responseParams=${partial.response.params}",
+                    )
+                }
+
+                val original = raw ?: jpeg
+                checkNotNull(original)
+
+                var originalBytes = 0L
+                val sink = object : OutputStream() {
+                    override fun write(value: Int) {
+                        originalBytes++
+                    }
+
+                    override fun write(
+                        buffer: ByteArray,
+                        offset: Int,
+                        length: Int,
+                    ) {
+                        originalBytes += length
+                    }
+                }
+
+                post(
+                    onStatus,
+                    "Streaming ${original.filename} without buffering the whole file…",
+                )
+
+                val transfer = transactCheckedTo(
+                    opcode = PtpObjectProtocol.OP_GET_OBJECT,
+                    params = listOf(original.handle),
+                    name = "GetObject(${original.filename})",
+                    output = sink,
+                )
+
+                check(originalBytes == original.size) {
+                    "GetObject returned $originalBytes bytes; expected ${original.size}."
+                }
+                check(transfer.dataLength == original.size)
+
+                Log.i(
+                    TAG,
+                    "PTP original stream name=${original.filename} " +
+                        "bytes=${transfer.dataLength}",
+                )
+
+                post(
+                    onSuccess,
+                    "Media probe passed: thumbnails, partial reads, and streamed original.",
+                )
+            } catch (error: Throwable) {
+                val message = "PTP media probe failed: ${error.message}"
+                Log.e(TAG, message, error)
+                post(onError, message)
+            }
+        }.start()
+    }
+
     fun close() {
         closed = true
         commandSocket?.close()
@@ -272,9 +401,17 @@ internal class PtpIpProbe(context: Context) {
 
                     when (packet.type) {
                         PtpIpProtocol.EVENT -> {
+                            val event = PtpIpProtocol.parseEvent(packet.body)
                             Log.i(
                                 TAG,
-                                "PTP/IP event received bytes=${packet.body.size}",
+                                "PTP/IP event code=0x" +
+                                    event.code.toString(16) +
+                                    " transaction=0x" +
+                                    event.transactionId.toUInt().toString(16) +
+                                    " params=" +
+                                    event.params.joinToString { parameter ->
+                                        "0x${parameter.toUInt().toString(16)}"
+                                    },
                             )
                         }
 
@@ -418,10 +555,53 @@ internal class PtpIpProbe(context: Context) {
         return result
     }
 
+    @Synchronized
+    private fun transactCheckedTo(
+        opcode: Int,
+        params: List<Int> = emptyList(),
+        name: String,
+        output: OutputStream,
+    ): PtpOperationTransaction {
+        val result = transactTo(
+            opcode = opcode,
+            params = params,
+            output = output,
+        )
+        check(result.response.code == SonyMediaProtocol.RESPONSE_OK) {
+            val response = result.response.code
+            val description = when (response) {
+                SonyMediaProtocol.RESPONSE_CAMERA_STATUS_ERROR ->
+                    "Camera Status Error"
+                else -> "Unknown"
+            }
+            "$name failed with response 0x${response.toString(16)} ($description)."
+        }
+        return result
+    }
+
     private fun transact(
         opcode: Int,
         params: List<Int>,
     ): TransactionResult {
+        val output = ByteArrayOutputStream()
+        val result = transactTo(
+            opcode = opcode,
+            params = params,
+            output = output,
+        )
+
+        return TransactionResult(
+            response = result.response,
+            data = output.toByteArray(),
+            params = result.response.params,
+        )
+    }
+
+    private fun transactTo(
+        opcode: Int,
+        params: List<Int>,
+        output: OutputStream,
+    ): PtpOperationTransaction {
         val failure = eventFailure
         check(failure == null) {
             "PTP/IP event channel failed: ${failure?.message}"
@@ -441,54 +621,19 @@ internal class PtpIpProbe(context: Context) {
             ),
         )
 
-        val data = ArrayList<ByteArray>()
-
-        while (true) {
-            val packet = PtpIpProtocol.readPacket(socket.getInputStream())
-
-            when (packet.type) {
-                PtpIpProtocol.START_DATA -> {
-                    val cursor = LittleEndianCursor(packet.body)
-                    check(cursor.u32().toInt() == currentTransactionId)
-                }
-
-                PtpIpProtocol.DATA,
-                PtpIpProtocol.END_DATA,
-                -> data += PtpIpProtocol.dataPayload(
-                    packet.body,
-                    currentTransactionId,
+        return PtpIpProtocol.readOperationTransaction(
+            input = socket.getInputStream(),
+            transactionId = currentTransactionId,
+            output = output,
+            onProbeRequest = {
+                sendPacket(
+                    socket,
+                    PtpIpProtocol.PROBE_RESPONSE,
+                    byteArrayOf(),
                 )
-
-                PtpIpProtocol.OPERATION_RESPONSE -> {
-                    val response =
-                        PtpIpProtocol.parseOperationResponse(packet.body)
-                    check(response.transactionId == currentTransactionId)
-
-                    return TransactionResult(
-                        response = response,
-                        data = concatenate(data),
-                        params = response.params,
-                    )
-                }
-
-                PtpIpProtocol.PROBE_REQUEST -> {
-                    sendPacket(
-                        socket,
-                        PtpIpProtocol.PROBE_RESPONSE,
-                        byteArrayOf(),
-                    )
-                    Log.i(TAG, "PTP/IP command ProbeRequest acknowledged")
-                }
-
-                PtpIpProtocol.PROBE_RESPONSE -> {
-                    Log.i(TAG, "PTP/IP command ProbeResponse received")
-                }
-
-                else -> error(
-                    "Unexpected PTP/IP packet type ${packet.type}.",
-                )
-            }
-        }
+                Log.i(TAG, "PTP/IP command ProbeRequest acknowledged")
+            },
+        )
     }
 
     private fun waitForPort(
@@ -542,19 +687,6 @@ internal class PtpIpProbe(context: Context) {
         socket.getOutputStream().flush()
     }
 
-    private fun concatenate(chunks: List<ByteArray>): ByteArray {
-        val size = chunks.sumOf { it.size }
-        val output = ByteArray(size)
-        var offset = 0
-
-        for (chunk in chunks) {
-            chunk.copyInto(output, offset)
-            offset += chunk.size
-        }
-
-        return output
-    }
-
     private fun <T> post(
         callback: (T) -> Unit,
         value: T,
@@ -576,6 +708,7 @@ internal class PtpIpProbe(context: Context) {
         const val ROOT_ASSOCIATION = 0
         const val CONTENTS_TRANSFER_RESET_MS = 200L
         const val CONTENTS_TRANSFER_SETTLE_MS = 1_500L
+        const val MEDIA_PROBE_PARTIAL_BYTES = 1024 * 1024
 
         const val SOCKET_CONNECT_TIMEOUT_MS = 2_000
         const val SOCKET_READ_TIMEOUT_MS = 15_000
