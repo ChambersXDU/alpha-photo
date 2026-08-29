@@ -265,8 +265,11 @@ internal class PtpIpProbe(context: Context) {
                 check(PtpObjectProtocol.OP_GET_THUMB in supportedOperations) {
                     "Camera does not expose standard GetThumb."
                 }
-                check(PtpObjectProtocol.OP_GET_PARTIAL_OBJECT in supportedOperations) {
-                    "Camera does not expose standard GetPartialObject."
+                check(
+                    SonyMediaProtocol.OP_SDIO_GET_PARTIAL_LARGE_OBJECT in
+                        supportedOperations,
+                ) {
+                    "Camera does not expose Sony SDIO_GetPartialLargeObject."
                 }
                 check(PtpObjectProtocol.OP_GET_OBJECT in supportedOperations) {
                     "Camera does not expose standard GetObject."
@@ -291,7 +294,7 @@ internal class PtpIpProbe(context: Context) {
                     "Camera listing contains no JPEG or RAW sample."
                 }
 
-                post(onStatus, "Probing thumbnails and partial transfers…")
+                post(onStatus, "Probing thumbnails and Sony partial transfers…")
 
                 for (photo in samples) {
                     val thumbnail = transactChecked(
@@ -311,19 +314,30 @@ internal class PtpIpProbe(context: Context) {
                     )
                     val partialOutput = ByteArrayOutputStream(partialSize)
                     val partial = transactCheckedTo(
-                        opcode = PtpObjectProtocol.OP_GET_PARTIAL_OBJECT,
-                        params = PtpObjectProtocol.partialObjectParams(
+                        opcode = SonyMediaProtocol.OP_SDIO_GET_PARTIAL_LARGE_OBJECT,
+                        params = SonyMediaProtocol.partialLargeObjectParams(
                             handle = photo.handle,
                             offset = 0,
                             maxBytes = partialSize,
                         ),
-                        name = "GetPartialObject(${photo.filename})",
+                        name = "SDIO_GetPartialLargeObject(${photo.filename})",
                         output = partialOutput,
                     )
+                    val reportedBytes = partial.response.params
+                        .firstOrNull()
+                        ?.toLong()
+                        ?.and(0xFFFFFFFFL)
+                    check(
+                        reportedBytes == null ||
+                            reportedBytes == partial.dataLength,
+                    ) {
+                        "Sony partial transfer reported $reportedBytes bytes " +
+                            "but delivered ${partial.dataLength}."
+                    }
 
                     Log.i(
                         TAG,
-                        "PTP partial name=${photo.filename} " +
+                        "PTP Sony partial name=${photo.filename} " +
                             "bytes=${partial.dataLength} " +
                             "responseParams=${partial.response.params}",
                     )
@@ -548,6 +562,8 @@ internal class PtpIpProbe(context: Context) {
             val description = when (response) {
                 SonyMediaProtocol.RESPONSE_CAMERA_STATUS_ERROR ->
                     "Camera Status Error"
+                RESPONSE_INVALID_OBJECT_HANDLE ->
+                    "Invalid Object Handle"
                 else -> "Unknown"
             }
             "$name failed with response 0x${response.toString(16)} ($description)."
@@ -572,6 +588,8 @@ internal class PtpIpProbe(context: Context) {
             val description = when (response) {
                 SonyMediaProtocol.RESPONSE_CAMERA_STATUS_ERROR ->
                     "Camera Status Error"
+                RESPONSE_INVALID_OBJECT_HANDLE ->
+                    "Invalid Object Handle"
                 else -> "Unknown"
             }
             "$name failed with response 0x${response.toString(16)} ($description)."
@@ -709,6 +727,7 @@ internal class PtpIpProbe(context: Context) {
         const val CONTENTS_TRANSFER_RESET_MS = 200L
         const val CONTENTS_TRANSFER_SETTLE_MS = 1_500L
         const val MEDIA_PROBE_PARTIAL_BYTES = 1024 * 1024
+        const val RESPONSE_INVALID_OBJECT_HANDLE = 0x2009
 
         const val SOCKET_CONNECT_TIMEOUT_MS = 2_000
         const val SOCKET_READ_TIMEOUT_MS = 15_000
