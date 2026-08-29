@@ -5,6 +5,10 @@ internal data class PtpObjectInfo(
     val storageId: Int,
     val formatCode: Int,
     val size: Long,
+    val thumbnailFormatCode: Int = 0,
+    val thumbnailSize: Long = 0,
+    val thumbnailWidth: Int = 0,
+    val thumbnailHeight: Int = 0,
     val width: Int,
     val height: Int,
     val associationType: Int,
@@ -49,10 +53,10 @@ internal object PtpObjectProtocol {
         cursor.u16()
         val size = cursor.u32()
 
-        cursor.u16()
-        cursor.u32()
-        cursor.u32()
-        cursor.u32()
+        val thumbnailFormatCode = cursor.u16()
+        val thumbnailSize = cursor.u32()
+        val thumbnailWidth = cursor.u32().toInt()
+        val thumbnailHeight = cursor.u32().toInt()
 
         val width = cursor.u32().toInt()
         val height = cursor.u32().toInt()
@@ -73,6 +77,10 @@ internal object PtpObjectProtocol {
             storageId = storageId,
             formatCode = formatCode,
             size = size,
+            thumbnailFormatCode = thumbnailFormatCode,
+            thumbnailSize = thumbnailSize,
+            thumbnailWidth = thumbnailWidth,
+            thumbnailHeight = thumbnailHeight,
             width = width,
             height = height,
             associationType = associationType,
