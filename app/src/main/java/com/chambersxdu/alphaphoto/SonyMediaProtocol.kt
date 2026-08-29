@@ -42,6 +42,7 @@ internal object SonyMediaProtocol {
     const val RESPONSE_CAMERA_STATUS_ERROR = 0xA106
     const val FUNCTION_MODE_CONTENTS_TRANSFER = 1
     const val CONTENTS_SELECT_REMOTE_DEVICE = 2
+    const val CONTENTS_TRANSFER_OFF = 0
     const val CONTENTS_TRANSFER_ON = 1
     const val CONTENTS_INFO_NONE = 0
     const val COMPRESSED_DATA_THUMBNAIL = 1
