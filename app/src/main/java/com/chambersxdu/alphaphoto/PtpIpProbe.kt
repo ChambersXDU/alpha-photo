@@ -208,6 +208,9 @@ internal class PtpIpProbe(context: Context) {
                             "name=${photo.filename} " +
                             "format=0x${photo.formatCode.toString(16)} " +
                             "size=${photo.size} " +
+                            "thumbFormat=0x${photo.thumbnailFormatCode.toString(16)} " +
+                            "thumbSize=${photo.thumbnailSize} " +
+                            "thumbDimensions=${photo.thumbnailWidth}x${photo.thumbnailHeight} " +
                             "dimensions=${photo.width}x${photo.height} " +
                             "captureDate=${photo.captureDate}",
                     )
@@ -265,12 +268,6 @@ internal class PtpIpProbe(context: Context) {
                 check(PtpObjectProtocol.OP_GET_THUMB in supportedOperations) {
                     "Camera does not expose standard GetThumb."
                 }
-                check(
-                    SonyMediaProtocol.OP_SDIO_GET_PARTIAL_LARGE_OBJECT in
-                        supportedOperations,
-                ) {
-                    "Camera does not expose Sony SDIO_GetPartialLargeObject."
-                }
                 check(PtpObjectProtocol.OP_GET_OBJECT in supportedOperations) {
                     "Camera does not expose standard GetObject."
                 }
@@ -294,53 +291,35 @@ internal class PtpIpProbe(context: Context) {
                     "Camera listing contains no JPEG or RAW sample."
                 }
 
-                post(onStatus, "Probing thumbnails and Sony partial transfers…")
+                post(onStatus, "Probing thumbnails and streamed original…")
 
                 for (photo in samples) {
-                    val thumbnail = transactChecked(
-                        opcode = PtpObjectProtocol.OP_GET_THUMB,
-                        params = listOf(photo.handle),
-                        name = "GetThumb(${photo.filename})",
-                    ).data
-
-                    Log.i(
-                        TAG,
-                        "PTP thumb name=${photo.filename} bytes=${thumbnail.size}",
-                    )
-
-                    val partialSize = minOf(
-                        MEDIA_PROBE_PARTIAL_BYTES,
-                        photo.size.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
-                    )
-                    val partialOutput = ByteArrayOutputStream(partialSize)
-                    val partial = transactCheckedTo(
-                        opcode = SonyMediaProtocol.OP_SDIO_GET_PARTIAL_LARGE_OBJECT,
-                        params = SonyMediaProtocol.partialLargeObjectParams(
-                            handle = photo.handle,
-                            offset = 0,
-                            maxBytes = partialSize,
-                        ),
-                        name = "SDIO_GetPartialLargeObject(${photo.filename})",
-                        output = partialOutput,
-                    )
-                    val reportedBytes = partial.response.params
-                        .firstOrNull()
-                        ?.toLong()
-                        ?.and(0xFFFFFFFFL)
-                    check(
-                        reportedBytes == null ||
-                            reportedBytes == partial.dataLength,
-                    ) {
-                        "Sony partial transfer reported $reportedBytes bytes " +
-                            "but delivered ${partial.dataLength}."
+                    val thumbnailResult = runCatching {
+                        transactChecked(
+                            opcode = PtpObjectProtocol.OP_GET_THUMB,
+                            params = listOf(photo.handle),
+                            name = "GetThumb(${photo.filename})",
+                        ).data
                     }
 
-                    Log.i(
-                        TAG,
-                        "PTP Sony partial name=${photo.filename} " +
-                            "bytes=${partial.dataLength} " +
-                            "responseParams=${partial.response.params}",
-                    )
+                    thumbnailResult
+                        .onSuccess { thumbnail ->
+                            Log.i(
+                                TAG,
+                                "PTP thumb name=${photo.filename} " +
+                                    "bytes=${thumbnail.size} " +
+                                    "declaredBytes=${photo.thumbnailSize} " +
+                                    "declaredDimensions=" +
+                                    "${photo.thumbnailWidth}x${photo.thumbnailHeight}",
+                            )
+                        }
+                        .onFailure { error ->
+                            Log.w(
+                                TAG,
+                                "PTP thumb unavailable name=${photo.filename}: " +
+                                    error.message,
+                            )
+                        }
                 }
 
                 val original = raw ?: jpeg
@@ -384,9 +363,69 @@ internal class PtpIpProbe(context: Context) {
                         "bytes=${transfer.dataLength}",
                 )
 
+                if (
+                    SonyMediaProtocol.OP_SDIO_GET_PARTIAL_LARGE_OBJECT in
+                        supportedOperations
+                ) {
+                    for (photo in samples) {
+                        val partialSize = minOf(
+                            MEDIA_PROBE_PARTIAL_BYTES,
+                            photo.size.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
+                        )
+                        val partialOutput = ByteArrayOutputStream(partialSize)
+                        val partial = transactTo(
+                            opcode =
+                                SonyMediaProtocol.OP_SDIO_GET_PARTIAL_LARGE_OBJECT,
+                            params = SonyMediaProtocol.partialLargeObjectParams(
+                                handle = photo.handle,
+                                offset = 0,
+                                maxBytes = partialSize,
+                            ),
+                            output = partialOutput,
+                        )
+
+                        if (partial.response.code == PtpResponseCodes.OK) {
+                            val reportedBytes = partial.response.params
+                                .firstOrNull()
+                                ?.toLong()
+                                ?.and(0xFFFFFFFFL)
+                            check(
+                                reportedBytes == null ||
+                                    reportedBytes == partial.dataLength,
+                            ) {
+                                "Sony partial transfer reported $reportedBytes bytes " +
+                                    "but delivered ${partial.dataLength}."
+                            }
+                            Log.i(
+                                TAG,
+                                "PTP Sony partial name=${photo.filename} " +
+                                    "bytes=${partial.dataLength} " +
+                                    "responseParams=${partial.response.params}",
+                            )
+                        } else {
+                            Log.w(
+                                TAG,
+                                "PTP Sony partial unavailable name=${photo.filename} " +
+                                    "response=0x" +
+                                    partial.response.code.toString(16) +
+                                    " (" +
+                                    PtpResponseCodes.describe(
+                                        partial.response.code,
+                                    ) +
+                                    ")",
+                            )
+                        }
+                    }
+                } else {
+                    Log.i(
+                        TAG,
+                        "PTP Sony partial skipped: 0x9211 not advertised.",
+                    )
+                }
+
                 post(
                     onSuccess,
-                    "Media probe passed: thumbnails, partial reads, and streamed original.",
+                    "Media probe passed: streamed original completed; optional preview/range probes logged.",
                 )
             } catch (error: Throwable) {
                 val message = "PTP media probe failed: ${error.message}"
@@ -418,7 +457,9 @@ internal class PtpIpProbe(context: Context) {
                             val event = PtpIpProtocol.parseEvent(packet.body)
                             Log.i(
                                 TAG,
-                                "PTP/IP event code=0x" +
+                                "PTP/IP event " +
+                                    PtpIpProtocol.eventName(event.code) +
+                                    " code=0x" +
                                     event.code.toString(16) +
                                     " transaction=0x" +
                                     event.transactionId.toUInt().toString(16) +
@@ -559,13 +600,7 @@ internal class PtpIpProbe(context: Context) {
         val result = transact(opcode, params)
         check(result.response.code == SonyMediaProtocol.RESPONSE_OK) {
             val response = result.response.code
-            val description = when (response) {
-                SonyMediaProtocol.RESPONSE_CAMERA_STATUS_ERROR ->
-                    "Camera Status Error"
-                RESPONSE_INVALID_OBJECT_HANDLE ->
-                    "Invalid Object Handle"
-                else -> "Unknown"
-            }
+            val description = PtpResponseCodes.describe(response)
             "$name failed with response 0x${response.toString(16)} ($description)."
         }
         return result
@@ -585,13 +620,7 @@ internal class PtpIpProbe(context: Context) {
         )
         check(result.response.code == SonyMediaProtocol.RESPONSE_OK) {
             val response = result.response.code
-            val description = when (response) {
-                SonyMediaProtocol.RESPONSE_CAMERA_STATUS_ERROR ->
-                    "Camera Status Error"
-                RESPONSE_INVALID_OBJECT_HANDLE ->
-                    "Invalid Object Handle"
-                else -> "Unknown"
-            }
+            val description = PtpResponseCodes.describe(response)
             "$name failed with response 0x${response.toString(16)} ($description)."
         }
         return result
@@ -727,7 +756,6 @@ internal class PtpIpProbe(context: Context) {
         const val CONTENTS_TRANSFER_RESET_MS = 200L
         const val CONTENTS_TRANSFER_SETTLE_MS = 1_500L
         const val MEDIA_PROBE_PARTIAL_BYTES = 1024 * 1024
-        const val RESPONSE_INVALID_OBJECT_HANDLE = 0x2009
 
         const val SOCKET_CONNECT_TIMEOUT_MS = 2_000
         const val SOCKET_READ_TIMEOUT_MS = 15_000
