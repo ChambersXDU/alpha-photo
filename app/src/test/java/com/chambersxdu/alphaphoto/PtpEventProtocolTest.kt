@@ -7,19 +7,39 @@ import org.junit.Test
 
 class PtpEventProtocolTest {
     @Test
-    fun parsesObjectAddedEvent() {
+    fun parsesSonyObjectAddedEvent() {
         val body = ByteBuffer.allocate(10)
             .order(ByteOrder.LITTLE_ENDIAN)
-            .putShort(0x4002.toShort())
+            .putShort(0xC201.toShort())
             .putInt(-1)
             .putInt(0x400005d3)
             .array()
 
         assertEquals(
             PtpEvent(
-                code = PtpIpProtocol.EVENT_OBJECT_ADDED,
+                code = PtpIpProtocol.EVENT_SONY_OBJECT_ADDED,
                 transactionId = -1,
                 params = listOf(0x400005d3),
+            ),
+            PtpIpProtocol.parseEvent(body),
+        )
+    }
+
+    @Test
+    fun parsesSonyContentInfoListChangedEvent() {
+        val body = ByteBuffer.allocate(14)
+            .order(ByteOrder.LITTLE_ENDIAN)
+            .putShort(0xC234.toShort())
+            .putInt(-1)
+            .putInt(1)
+            .putInt(1)
+            .array()
+
+        assertEquals(
+            PtpEvent(
+                code = PtpIpProtocol.EVENT_SONY_CONTENT_INFO_LIST_CHANGED,
+                transactionId = -1,
+                params = listOf(1, 1),
             ),
             PtpIpProtocol.parseEvent(body),
         )
