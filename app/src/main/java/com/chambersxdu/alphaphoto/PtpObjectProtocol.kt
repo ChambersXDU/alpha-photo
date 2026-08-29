@@ -32,18 +32,6 @@ internal object PtpObjectProtocol {
     const val OP_GET_OBJECT_INFO = 0x1008
     const val OP_GET_OBJECT = 0x1009
     const val OP_GET_THUMB = 0x100A
-    const val OP_GET_PARTIAL_OBJECT = 0x101B
-
-    fun partialObjectParams(
-        handle: Int,
-        offset: Int,
-        maxBytes: Int,
-    ): List<Int> {
-        require(offset >= 0)
-        require(maxBytes >= 0)
-        return listOf(handle, offset, maxBytes)
-    }
-
     fun parseStorageIds(data: ByteArray): List<Int> =
         LittleEndianCursor(data).u32Array()
 
