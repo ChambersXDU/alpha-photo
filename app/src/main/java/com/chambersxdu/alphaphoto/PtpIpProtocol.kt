@@ -53,6 +53,13 @@ internal object PtpIpProtocol {
     const val EVENT_REQUEST_OBJECT_TRANSFER = 0x4009
     const val EVENT_CAPTURE_COMPLETE = 0x400D
 
+    const val EVENT_SONY_OBJECT_ADDED = 0xC201
+    const val EVENT_SONY_OBJECT_REMOVED = 0xC202
+    const val EVENT_SONY_DEVICE_PROP_CHANGED = 0xC203
+    const val EVENT_SONY_CAPTURED = 0xC206
+    const val EVENT_SONY_CONTENTS_TRANSFER = 0xC20D
+    const val EVENT_SONY_CONTENT_INFO_LIST_CHANGED = 0xC234
+
     fun encodePacket(
         type: Int,
         body: ByteArray = byteArrayOf(),
