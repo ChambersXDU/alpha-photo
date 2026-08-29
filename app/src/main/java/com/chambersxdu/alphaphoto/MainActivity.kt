@@ -241,14 +241,13 @@ private fun AlphaPhotoApp() {
                     modifier = Modifier.fillMaxWidth(),
                     enabled = ptpReady,
                     onClick = {
-                        ptpIpProbe.listRecentFiles(
-                            slot = 1,
+                        ptpIpProbe.listCameraPhotos(
                             onStatus = { message ->
                                 status = message
                             },
-                            onSuccess = { files ->
+                            onSuccess = { photos ->
                                 status =
-                                    "Slot 1: ${files.size} recent files."
+                                    "Camera: ${photos.size} JPEG/RAW/HEIF photos."
                             },
                             onError = { message ->
                                 status = message
@@ -256,35 +255,13 @@ private fun AlphaPhotoApp() {
                         )
                     },
                 ) {
-                    Text("List recent files · slot 1")
-                }
-
-                Button(
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = ptpReady,
-                    onClick = {
-                        ptpIpProbe.listRecentFiles(
-                            slot = 2,
-                            onStatus = { message ->
-                                status = message
-                            },
-                            onSuccess = { files ->
-                                status =
-                                    "Slot 2: ${files.size} recent files."
-                            },
-                            onError = { message ->
-                                status = message
-                            },
-                        )
-                    },
-                ) {
-                    Text("List recent files · slot 2")
+                    Text("List camera photos")
                 }
 
                 Text(
                     text =
                         "Connect runs BLE → camera Wi-Fi → full Sony PTP transfer-session setup. " +
-                            "The slot buttons exercise read-only card listing.",
+                            "Photo listing uses standard PTP GetObjectHandles/GetObjectInfo in Sony content-transfer mode.",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
