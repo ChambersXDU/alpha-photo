@@ -8,6 +8,19 @@ import org.junit.Test
 
 class PtpObjectProtocolTest {
     @Test
+    fun parsesStorageIds() {
+        val data = writer {
+            u32(1)
+            u32(0x00010001)
+        }
+
+        assertEquals(
+            listOf(0x00010001),
+            PtpObjectProtocol.parseStorageIds(data),
+        )
+    }
+
+    @Test
     fun parsesObjectHandles() {
         val data = writer {
             u32(3)
@@ -26,11 +39,11 @@ class PtpObjectProtocolTest {
     fun parsesRawObjectInfo() {
         val data = writer {
             u32(0x00010001)
-            u16(PtpObjectProtocol.FORMAT_RAW)
+            u16(0xB101)
             u16(0)
             u32(38_547_456)
 
-            u16(PtpObjectProtocol.FORMAT_JPEG)
+            u16(0x3801)
             u32(6_789)
             u32(160)
             u32(120)
@@ -57,6 +70,7 @@ class PtpObjectProtocolTest {
                 size = 38_547_456,
                 width = 7008,
                 height = 4672,
+                associationType = 0,
                 filename = "DSC00001.ARW",
                 captureDate = "20260829T084500",
             ),
@@ -65,6 +79,40 @@ class PtpObjectProtocolTest {
                 data = data,
             ),
         )
+    }
+
+    @Test
+    fun recognizesPhotoByFilenameAndObjectShape() {
+        val photo = PtpObjectInfo(
+            handle = 1,
+            storageId = 0x00010001,
+            formatCode = 0xB101,
+            size = 10,
+            width = 7008,
+            height = 4672,
+            associationType = 0,
+            filename = "DSC00001.ARW",
+            captureDate = "20260829T084500",
+        )
+
+        assertEquals(true, photo.isPhoto())
+    }
+
+    @Test
+    fun rejectsFolderAsPhoto() {
+        val folder = PtpObjectInfo(
+            handle = 2,
+            storageId = 0x00010001,
+            formatCode = 0x3001,
+            size = 0,
+            width = 0,
+            height = 0,
+            associationType = 1,
+            filename = "2026-08-29",
+            captureDate = "",
+        )
+
+        assertEquals(false, folder.isPhoto())
     }
 
     private fun writer(block: Writer.() -> Unit): ByteArray =

@@ -7,23 +7,32 @@ internal data class PtpObjectInfo(
     val size: Long,
     val width: Int,
     val height: Int,
+    val associationType: Int,
     val filename: String,
     val captureDate: String,
-)
+) {
+    fun isPhoto(): Boolean {
+        val lower = filename.lowercase()
+        return associationType == 0 &&
+            size > 0 &&
+            (
+                lower.endsWith(".jpg") ||
+                    lower.endsWith(".jpeg") ||
+                    lower.endsWith(".arw") ||
+                    lower.endsWith(".raw") ||
+                    lower.endsWith(".heif") ||
+                    lower.endsWith(".hif")
+            )
+    }
+}
 
 internal object PtpObjectProtocol {
+    const val OP_GET_STORAGE_IDS = 0x1004
     const val OP_GET_OBJECT_HANDLES = 0x1007
     const val OP_GET_OBJECT_INFO = 0x1008
 
-    const val FORMAT_JPEG = 0x3801
-    const val FORMAT_RAW = 0xB101
-    const val FORMAT_HEIF = 0xB110
-
-    val PHOTO_FORMATS = listOf(
-        FORMAT_JPEG,
-        FORMAT_RAW,
-        FORMAT_HEIF,
-    )
+    fun parseStorageIds(data: ByteArray): List<Int> =
+        LittleEndianCursor(data).u32Array()
 
     fun parseHandles(data: ByteArray): List<Int> =
         LittleEndianCursor(data).u32Array()
@@ -49,7 +58,7 @@ internal object PtpObjectProtocol {
 
         cursor.u32()
         cursor.u32()
-        cursor.u16()
+        val associationType = cursor.u16()
         cursor.u32()
         cursor.u32()
 
@@ -65,6 +74,7 @@ internal object PtpObjectProtocol {
             size = size,
             width = width,
             height = height,
+            associationType = associationType,
             filename = filename,
             captureDate = captureDate,
         )
