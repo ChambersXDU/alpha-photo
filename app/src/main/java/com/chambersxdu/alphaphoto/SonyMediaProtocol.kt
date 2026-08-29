@@ -31,6 +31,7 @@ internal object SonyMediaProtocol {
     const val OP_SDIO_CONNECT = 0x9201
     const val OP_SDIO_GET_EXT_DEVICE_INFO = 0x9202
     const val OP_SDIO_OPEN_SESSION = 0x9210
+    const val OP_SDIO_GET_PARTIAL_LARGE_OBJECT = 0x9211
     const val OP_SDIO_SET_CONTENTS_TRANSFER_MODE = 0x9212
     const val OP_SDIO_GET_VENDOR_CODE_VERSION = 0x9216
     const val OP_SDIO_GET_CAPTURED_DATE_LIST = 0x923B
@@ -130,6 +131,22 @@ internal object SonyMediaProtocol {
         return SonyContentsList(
             slotId = slotId,
             files = files,
+        )
+    }
+
+    fun partialLargeObjectParams(
+        handle: Int,
+        offset: Long,
+        maxBytes: Int,
+    ): List<Int> {
+        require(offset >= 0)
+        require(maxBytes > 0)
+
+        return listOf(
+            handle,
+            offset.toInt(),
+            (offset ushr 32).toInt(),
+            maxBytes,
         )
     }
 

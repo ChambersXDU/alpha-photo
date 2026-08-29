@@ -35,28 +35,39 @@ class WifiConnectionManager(context: Context) {
         onConnected: (CameraNetwork) -> Unit,
         onError: (String) -> Unit,
     ) {
-        check(networkCallback == null)
+        if (networkCallback != null) {
+            onError("Camera Wi-Fi connection is already in progress.")
+            return
+        }
 
         if (!wifiManager.isWifiEnabled) {
             onError("Phone Wi-Fi is off.")
             return
         }
 
-        val specifierBuilder = WifiNetworkSpecifier.Builder()
-            .setWpa2Passphrase(credentials.password)
+        val request = try {
+            val specifierBuilder = WifiNetworkSpecifier.Builder()
+                .setWpa2Passphrase(credentials.password)
 
-        credentials.ssid?.let(specifierBuilder::setSsid)
-        credentials.bssid?.let { bssid ->
-            specifierBuilder.setBssid(MacAddress.fromString(bssid))
+            credentials.ssid?.let(specifierBuilder::setSsid)
+            credentials.bssid?.let { bssid ->
+                specifierBuilder.setBssid(MacAddress.fromString(bssid))
+            }
+
+            val specifier = specifierBuilder.build()
+
+            NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .setNetworkSpecifier(specifier)
+                .build()
+        } catch (error: Throwable) {
+            onError(
+                "Camera Wi-Fi request is invalid: " +
+                    (error.message ?: error.javaClass.simpleName),
+            )
+            return
         }
-
-        val specifier = specifierBuilder.build()
-
-        val request = NetworkRequest.Builder()
-            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-            .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .setNetworkSpecifier(specifier)
-            .build()
 
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
@@ -74,6 +85,10 @@ class WifiConnectionManager(context: Context) {
 
             override fun onUnavailable() {
                 Log.e(TAG, "Camera Wi-Fi network request unavailable")
+                if (networkCallback === this) {
+                    networkCallback = null
+                    deliveredNetwork = null
+                }
                 post(onError, "Android could not join the camera Wi-Fi.")
             }
 
@@ -92,14 +107,29 @@ class WifiConnectionManager(context: Context) {
             "Requesting camera Wi-Fi ssid=${credentials.ssid} bssid=${credentials.bssid}",
         )
         post(onStatus, "Joining camera Wi-Fi…")
-        connectivityManager.requestNetwork(request, callback)
+        try {
+            connectivityManager.requestNetwork(request, callback)
+        } catch (error: Throwable) {
+            networkCallback = null
+            deliveredNetwork = null
+            val message =
+                "Android could not start the camera Wi-Fi request: " +
+                    (error.message ?: error.javaClass.simpleName)
+            Log.e(TAG, message, error)
+            post(onError, message)
+        }
     }
 
     fun release() {
         val callback = networkCallback ?: return
-        connectivityManager.unregisterNetworkCallback(callback)
-        networkCallback = null
-        deliveredNetwork = null
+        try {
+            connectivityManager.unregisterNetworkCallback(callback)
+        } catch (error: IllegalArgumentException) {
+            Log.w(TAG, "Camera Wi-Fi callback was already released.", error)
+        } finally {
+            networkCallback = null
+            deliveredNetwork = null
+        }
     }
 
     private fun deliverWhenReady(

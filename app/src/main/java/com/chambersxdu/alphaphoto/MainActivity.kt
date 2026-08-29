@@ -20,10 +20,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -65,11 +69,23 @@ private fun AlphaPhotoApp() {
     val ptpIpProbe = remember {
         PtpIpProbe(context.applicationContext)
     }
+    val connectionGate = remember {
+        CameraConnectionGate()
+    }
+    val snackbarHostState = remember {
+        SnackbarHostState()
+    }
 
+    var snackbarMessage by remember {
+        mutableStateOf<String?>(null)
+    }
     var association by remember {
         mutableStateOf(associationManager.currentAssociation())
     }
     var ptpReady by remember { mutableStateOf(false) }
+    var cameraPhotos by remember {
+        mutableStateOf<List<PtpObjectInfo>>(emptyList())
+    }
     var status by remember {
         mutableStateOf(
             if (association == null) {
@@ -78,6 +94,27 @@ private fun AlphaPhotoApp() {
                 "Ready to connect wirelessly."
             },
         )
+    }
+
+    LaunchedEffect(snackbarMessage) {
+        val message = snackbarMessage ?: return@LaunchedEffect
+        snackbarMessage = null
+        snackbarHostState.showSnackbar(message)
+    }
+
+    val showError: (String) -> Unit = { message ->
+        status = message
+        snackbarMessage = message
+    }
+
+    val connectionFailed: (String) -> Unit = { message ->
+        ptpIpProbe.close()
+        gattInspector.close()
+        wifiConnectionManager.release()
+        connectionGate.failed()
+        ptpReady = false
+        cameraPhotos = emptyList()
+        showError(message)
     }
 
     val associationLauncher = rememberLauncherForActivityResult(
@@ -90,13 +127,30 @@ private fun AlphaPhotoApp() {
         }
     }
 
-    val startWirelessConnection = {
-        val currentAssociation = checkNotNull(association)
-        val address = checkNotNull(currentAssociation.deviceMacAddress)
+    val startWirelessConnection = connection@{
+        when (connectionGate.begin()) {
+            CameraConnectionGate.BeginResult.ALREADY_CONNECTING -> {
+                showError("Camera connection is already in progress.")
+                return@connection
+            }
+            CameraConnectionGate.BeginResult.ALREADY_READY -> {
+                status = "Camera is already connected."
+                return@connection
+            }
+            CameraConnectionGate.BeginResult.STARTED -> Unit
+        }
 
-        if (!wifiConnectionManager.isWifiEnabled()) {
-            status =
-                "Turn on phone Wi-Fi, then tap Connect wirelessly again."
+        val currentAssociation = association
+        val address = currentAssociation?.deviceMacAddress
+
+        if (currentAssociation == null || address == null) {
+            connectionFailed(
+                "The saved camera association is incomplete. Associate the camera again.",
+            )
+        } else if (!wifiConnectionManager.isWifiEnabled()) {
+            connectionFailed(
+                "Turn on phone Wi-Fi, then tap Connect wirelessly again.",
+            )
             context.startActivity(Intent(Settings.Panel.ACTION_WIFI))
         } else {
             gattInspector.connectAndGetWifiCredentials(
@@ -117,20 +171,18 @@ private fun AlphaPhotoApp() {
                                     status = message
                                 },
                                 onSuccess = {
+                                    connectionGate.ready()
                                     ptpReady = true
                                     status =
                                         "Wireless path ready: BLE → Wi-Fi → Sony PTP."
                                 },
-                                onError = { message ->
-                                    status = message
-                                },
+                                onError = connectionFailed,
                             )
                         },
-                        onError = { message ->
-                            status = message
-                        },
+                        onError = connectionFailed,
                     )
                 },
+                onError = connectionFailed,
             )
         }
     }
@@ -146,8 +198,9 @@ private fun AlphaPhotoApp() {
         if (granted) {
             startWirelessConnection()
         } else {
-            status =
-                "Bluetooth and Nearby Wi-Fi permissions are required."
+            showError(
+                "Bluetooth and Nearby Wi-Fi permissions are required.",
+            )
         }
     }
 
@@ -160,13 +213,22 @@ private fun AlphaPhotoApp() {
     }
 
     MaterialTheme {
-        Surface(modifier = Modifier.fillMaxSize()) {
-            Column(
+        Scaffold(
+            snackbarHost = {
+                SnackbarHost(hostState = snackbarHostState)
+            },
+        ) { innerPadding ->
+            Surface(
                 modifier = Modifier
-                    .safeDrawingPadding()
-                    .padding(24.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                    .fillMaxSize()
+                    .padding(innerPadding),
             ) {
+                Column(
+                    modifier = Modifier
+                        .safeDrawingPadding()
+                        .padding(24.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
                 Text(
                     text = "Alpha Photo",
                     style = MaterialTheme.typography.headlineMedium,
@@ -246,24 +308,44 @@ private fun AlphaPhotoApp() {
                                 status = message
                             },
                             onSuccess = { photos ->
+                                cameraPhotos = photos
                                 status =
                                     "Camera: ${photos.size} JPEG/RAW/HEIF photos."
                             },
-                            onError = { message ->
-                                status = message
-                            },
+                            onError = showError,
                         )
                     },
                 ) {
                     Text("List camera photos")
                 }
 
-                Text(
-                    text =
-                        "Connect runs BLE → camera Wi-Fi → full Sony PTP transfer-session setup. " +
-                            "Photo listing uses standard PTP GetObjectHandles/GetObjectInfo in Sony content-transfer mode.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = ptpReady && cameraPhotos.isNotEmpty(),
+                    onClick = {
+                        ptpIpProbe.probeMediaTransfer(
+                            photos = cameraPhotos,
+                            onStatus = { message ->
+                                status = message
+                            },
+                            onSuccess = { message ->
+                                status = message
+                            },
+                            onError = showError,
+                        )
+                    },
+                ) {
+                    Text("Probe media transfer")
+                }
+
+                    Text(
+                        text =
+                            "Connect runs BLE → camera Wi-Fi → full Sony PTP transfer-session setup. " +
+                                "Photo listing uses standard PTP objects. Media probe exercises GetThumb, " +
+                                "streamed GetObject, and optional Sony range reads without storing an original.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
             }
         }
     }

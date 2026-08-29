@@ -33,6 +33,7 @@ class GattInspector(context: Context) {
     private var bootstrapState = BootstrapState.IDLE
     private var onStatus: ((String) -> Unit)? = null
     private var onCredentials: ((CameraWifiCredentials) -> Unit)? = null
+    private var onError: ((String) -> Unit)? = null
 
     private var ssid: String? = null
     private var password = ""
@@ -54,26 +55,38 @@ class GattInspector(context: Context) {
         address: MacAddress,
         onStatus: (String) -> Unit,
         onCredentials: (CameraWifiCredentials) -> Unit,
+        onError: (String) -> Unit,
     ) {
-        check(gatt == null)
-        check(bootstrapState == BootstrapState.IDLE)
+        if (gatt != null || bootstrapState != BootstrapState.IDLE) {
+            onError("Camera Bluetooth connection is already in progress.")
+            return
+        }
 
         this.onStatus = onStatus
         this.onCredentials = onCredentials
+        this.onError = onError
 
-        val device = bluetoothManager.adapter.getRemoteDevice(address.toByteArray())
-        Log.i(
-            TAG,
-            "GATT connect requested address=$address bondState=${device.bondState}",
-        )
-        postStatus("Connecting to camera over Bluetooth…")
+        try {
+            val device =
+                bluetoothManager.adapter.getRemoteDevice(address.toByteArray())
+            Log.i(
+                TAG,
+                "GATT connect requested address=$address bondState=${device.bondState}",
+            )
+            postStatus("Connecting to camera over Bluetooth…")
 
-        gatt = device.connectGatt(
-            appContext,
-            false,
-            callback,
-            BluetoothDevice.TRANSPORT_LE,
-        )
+            gatt = device.connectGatt(
+                appContext,
+                false,
+                callback,
+                BluetoothDevice.TRANSPORT_LE,
+            )
+        } catch (error: Throwable) {
+            fail(
+                "Bluetooth connection could not start: " +
+                    (error.message ?: error.javaClass.simpleName),
+            )
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -84,6 +97,7 @@ class GattInspector(context: Context) {
         bootstrapState = BootstrapState.IDLE
         onStatus = null
         onCredentials = null
+        onError = null
         ssid = null
         password = ""
     }
@@ -140,12 +154,30 @@ class GattInspector(context: Context) {
                 return
             }
 
-            val service = checkNotNull(gatt.getService(CAMERA_CONTROL_SERVICE))
-            checkNotNull(service.getCharacteristic(WIFI_STATUS_CHARACTERISTIC))
-            checkNotNull(service.getCharacteristic(WIFI_START_CHARACTERISTIC))
-            checkNotNull(service.getCharacteristic(WIFI_SSID_CHARACTERISTIC))
-            checkNotNull(service.getCharacteristic(WIFI_PASSWORD_CHARACTERISTIC))
-            checkNotNull(service.getCharacteristic(WIFI_BSSID_CHARACTERISTIC))
+            val service = gatt.getService(CAMERA_CONTROL_SERVICE)
+            if (service == null) {
+                fail("Sony Camera Control Bluetooth service was not found.")
+                return
+            }
+
+            val requiredCharacteristics = listOf(
+                WIFI_STATUS_CHARACTERISTIC,
+                WIFI_START_CHARACTERISTIC,
+                WIFI_SSID_CHARACTERISTIC,
+                WIFI_PASSWORD_CHARACTERISTIC,
+                WIFI_BSSID_CHARACTERISTIC,
+            )
+            val missingCharacteristic =
+                requiredCharacteristics.firstOrNull { uuid ->
+                    service.getCharacteristic(uuid) == null
+                }
+            if (missingCharacteristic != null) {
+                fail(
+                    "Sony Bluetooth characteristic is missing: " +
+                        missingCharacteristic,
+                )
+                return
+            }
 
             Log.i(TAG, "Sony Camera Control service verified")
             subscribeToWifiStatus(gatt)
@@ -165,7 +197,14 @@ class GattInspector(context: Context) {
                 return
             }
 
-            check(bootstrapState == BootstrapState.ENABLING_STATUS)
+            if (bootstrapState != BootstrapState.ENABLING_STATUS) {
+                Log.w(
+                    TAG,
+                    "Ignoring stale GATT descriptor callback in state=" +
+                        bootstrapState,
+                )
+                return
+            }
             bootstrapState = BootstrapState.READING_STATUS
             readCharacteristic(gatt, WIFI_STATUS_CHARACTERISTIC)
         }
@@ -288,9 +327,14 @@ class GattInspector(context: Context) {
 
     @SuppressLint("MissingPermission")
     private fun subscribeToWifiStatus(gatt: BluetoothGatt) {
-        val service = checkNotNull(gatt.getService(CAMERA_CONTROL_SERVICE))
-        val characteristic = checkNotNull(service.getCharacteristic(WIFI_STATUS_CHARACTERISTIC))
-        val descriptor = checkNotNull(characteristic.getDescriptor(CLIENT_CONFIGURATION_DESCRIPTOR))
+        val characteristic =
+            sonyCharacteristic(gatt, WIFI_STATUS_CHARACTERISTIC) ?: return
+        val descriptor =
+            characteristic.getDescriptor(CLIENT_CONFIGURATION_DESCRIPTOR)
+        if (descriptor == null) {
+            fail("Sony Wi-Fi status notification descriptor was not found.")
+            return
+        }
 
         if (!gatt.setCharacteristicNotification(characteristic, true)) {
             fail("Sony Wi-Fi status notification registration failed.")
@@ -322,8 +366,8 @@ class GattInspector(context: Context) {
             return
         }
 
-        val service = checkNotNull(gatt.getService(CAMERA_CONTROL_SERVICE))
-        val characteristic = checkNotNull(service.getCharacteristic(WIFI_START_CHARACTERISTIC))
+        val characteristic =
+            sonyCharacteristic(gatt, WIFI_START_CHARACTERISTIC) ?: return
 
         bootstrapState = BootstrapState.WAITING_FOR_WIFI
         val requestStatus = gatt.writeCharacteristic(
@@ -378,8 +422,7 @@ class GattInspector(context: Context) {
         gatt: BluetoothGatt,
         uuid: UUID,
     ) {
-        val service = checkNotNull(gatt.getService(CAMERA_CONTROL_SERVICE))
-        val characteristic = checkNotNull(service.getCharacteristic(uuid))
+        val characteristic = sonyCharacteristic(gatt, uuid) ?: return
 
         Log.i(TAG, "GATT read requested uuid=$uuid")
         if (!gatt.readCharacteristic(characteristic)) {
@@ -392,7 +435,12 @@ class GattInspector(context: Context) {
         Log.i(TAG, "Sony Wi-Fi credentials ready ssid=$ssid bssid=$bssid")
         postStatus("Camera Wi-Fi credentials received.")
 
-        val callback = checkNotNull(onCredentials)
+        val callback = onCredentials
+        if (callback == null) {
+            Log.w(TAG, "Ignoring late Sony Wi-Fi credentials callback.")
+            return
+        }
+
         appContext.mainExecutor.execute {
             callback(
                 CameraWifiCredentials(
@@ -404,10 +452,48 @@ class GattInspector(context: Context) {
         }
     }
 
+    private fun sonyCharacteristic(
+        gatt: BluetoothGatt,
+        uuid: UUID,
+    ): BluetoothGattCharacteristic? {
+        val service = gatt.getService(CAMERA_CONTROL_SERVICE)
+        if (service == null) {
+            fail("Sony Camera Control Bluetooth service is unavailable.")
+            return null
+        }
+
+        val characteristic = service.getCharacteristic(uuid)
+        if (characteristic == null) {
+            fail("Sony Bluetooth characteristic is unavailable: $uuid")
+            return null
+        }
+
+        return characteristic
+    }
+
+    @SuppressLint("MissingPermission")
     private fun fail(message: String) {
         handler.removeCallbacks(wifiLaunchTimeout)
         Log.e(TAG, message)
-        postStatus(message)
+
+        val callback = onError
+        val activeGatt = gatt
+
+        gatt = null
+        bootstrapState = BootstrapState.IDLE
+        onStatus = null
+        onCredentials = null
+        onError = null
+        ssid = null
+        password = ""
+
+        activeGatt?.close()
+
+        if (callback != null) {
+            appContext.mainExecutor.execute {
+                callback(message)
+            }
+        }
     }
 
     private fun postStatus(message: String) {
