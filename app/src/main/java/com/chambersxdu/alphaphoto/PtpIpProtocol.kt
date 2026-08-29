@@ -1,6 +1,7 @@
 package com.chambersxdu.alphaphoto
 
 import java.io.InputStream
+import java.io.OutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -10,6 +11,17 @@ internal data class PtpIpPacket(
 )
 
 internal data class PtpOperationResponse(
+    val code: Int,
+    val transactionId: Int,
+    val params: List<Int>,
+)
+
+internal data class PtpOperationTransaction(
+    val response: PtpOperationResponse,
+    val dataLength: Long,
+)
+
+internal data class PtpEvent(
     val code: Int,
     val transactionId: Int,
     val params: List<Int>,
@@ -35,6 +47,12 @@ internal object PtpIpProtocol {
 
     const val PHASE_NO_DATA_OR_DATA_IN = 1
 
+    const val EVENT_OBJECT_ADDED = 0x4002
+    const val EVENT_OBJECT_REMOVED = 0x4003
+    const val EVENT_OBJECT_INFO_CHANGED = 0x4007
+    const val EVENT_REQUEST_OBJECT_TRANSFER = 0x4009
+    const val EVENT_CAPTURE_COMPLETE = 0x400D
+
     fun encodePacket(
         type: Int,
         body: ByteArray = byteArrayOf(),
@@ -47,16 +65,11 @@ internal object PtpIpProtocol {
             .array()
 
     fun readPacket(input: InputStream): PtpIpPacket {
-        val header = input.readExactly(8)
-        val buffer = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
-        val length = buffer.int
-        val type = buffer.int
-
-        require(length >= 8)
+        val header = readHeader(input)
 
         return PtpIpPacket(
-            type = type,
-            body = input.readExactly(length - 8),
+            type = header.type,
+            body = input.readExactly(header.bodyLength),
         )
     }
 
@@ -110,6 +123,91 @@ internal object PtpIpProtocol {
         )
     }
 
+    fun parseEvent(body: ByteArray): PtpEvent {
+        require(body.size >= 6)
+        require((body.size - 6) % 4 == 0)
+
+        val buffer = ByteBuffer.wrap(body).order(ByteOrder.LITTLE_ENDIAN)
+        val code = buffer.short.toInt() and 0xFFFF
+        val transactionId = buffer.int
+        val params = buildList {
+            while (buffer.remaining() >= 4) {
+                add(buffer.int)
+            }
+        }
+
+        return PtpEvent(
+            code = code,
+            transactionId = transactionId,
+            params = params,
+        )
+    }
+
+    fun readOperationTransaction(
+        input: InputStream,
+        transactionId: Int,
+        output: OutputStream,
+        onProbeRequest: () -> Unit,
+    ): PtpOperationTransaction {
+        var dataLength = 0L
+
+        while (true) {
+            val header = readHeader(input)
+
+            when (header.type) {
+                START_DATA -> {
+                    val body = input.readExactly(header.bodyLength)
+                    require(body.size >= 12)
+                    require(
+                        ByteBuffer.wrap(body, 0, 4)
+                            .order(ByteOrder.LITTLE_ENDIAN)
+                            .int == transactionId,
+                    )
+                }
+
+                DATA,
+                END_DATA,
+                -> {
+                    require(header.bodyLength >= 4)
+                    val packetTransactionId = input.readLittleEndianInt()
+                    require(packetTransactionId == transactionId)
+
+                    val payloadLength = header.bodyLength - 4
+                    input.copyExactly(
+                        count = payloadLength,
+                        output = output,
+                    )
+                    dataLength += payloadLength
+                }
+
+                OPERATION_RESPONSE -> {
+                    val response = parseOperationResponse(
+                        input.readExactly(header.bodyLength),
+                    )
+                    require(response.transactionId == transactionId)
+
+                    return PtpOperationTransaction(
+                        response = response,
+                        dataLength = dataLength,
+                    )
+                }
+
+                PROBE_REQUEST -> {
+                    input.readExactly(header.bodyLength)
+                    onProbeRequest()
+                }
+
+                PROBE_RESPONSE -> {
+                    input.readExactly(header.bodyLength)
+                }
+
+                else -> error(
+                    "Unexpected PTP/IP packet type ${header.type}.",
+                )
+            }
+        }
+    }
+
     fun dataPayload(
         body: ByteArray,
         transactionId: Int,
@@ -142,6 +240,42 @@ internal object PtpIpProtocol {
             .putInt(value)
             .array()
 
+    private fun readHeader(input: InputStream): PacketHeader {
+        val header = input.readExactly(8)
+        val buffer = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
+        val length = buffer.int
+        val type = buffer.int
+
+        require(length >= 8)
+
+        return PacketHeader(
+            type = type,
+            bodyLength = length - 8,
+        )
+    }
+
+    private fun InputStream.readLittleEndianInt(): Int =
+        ByteBuffer.wrap(readExactly(4))
+            .order(ByteOrder.LITTLE_ENDIAN)
+            .int
+
+    private fun InputStream.copyExactly(
+        count: Int,
+        output: OutputStream,
+    ) {
+        var remaining = count
+        val buffer = ByteArray(minOf(64 * 1024, maxOf(1, count)))
+
+        while (remaining > 0) {
+            val read = read(buffer, 0, minOf(buffer.size, remaining))
+            check(read >= 0) {
+                "Connection closed while reading PTP/IP packet."
+            }
+            output.write(buffer, 0, read)
+            remaining -= read
+        }
+    }
+
     private fun InputStream.readExactly(count: Int): ByteArray {
         val output = ByteArray(count)
         var offset = 0
@@ -156,4 +290,9 @@ internal object PtpIpProtocol {
 
         return output
     }
+
+    private data class PacketHeader(
+        val type: Int,
+        val bodyLength: Int,
+    )
 }
