@@ -102,57 +102,87 @@ internal class PtpIpProbe(context: Context) {
         }.start()
     }
 
-    fun listRecentFiles(
-        slot: Int,
+    fun listCameraPhotos(
         onStatus: (String) -> Unit,
-        onSuccess: (List<SonyContentFile>) -> Unit,
+        onSuccess: (List<PtpObjectInfo>) -> Unit,
         onError: (String) -> Unit,
     ) {
         Thread {
             try {
-                require(slot > 0)
-                post(onStatus, "Listing recent photos from slot $slot…")
-
-                val dates = transactChecked(
-                    opcode = SonyMediaProtocol.OP_SDIO_GET_CAPTURED_DATE_LIST,
-                    params = listOf(slot),
-                    name = "SDIO_GetCapturedDateList",
-                ).data
-
-                val capturedDates = SonyMediaProtocol.parseCapturedDates(dates)
-                if (capturedDates.isEmpty()) {
-                    post(onSuccess, emptyList())
-                    return@Thread
+                check(
+                    PtpObjectProtocol.OP_GET_OBJECT_HANDLES in
+                        supportedOperations,
+                ) {
+                    "Camera does not expose standard GetObjectHandles."
+                }
+                check(
+                    PtpObjectProtocol.OP_GET_OBJECT_INFO in
+                        supportedOperations,
+                ) {
+                    "Camera does not expose standard GetObjectInfo."
                 }
 
-                val latestDate = capturedDates.max()
-                val contents = transactChecked(
-                    opcode = SonyMediaProtocol.OP_SDIO_GET_CONTENTS_INFO_LIST,
-                    params = SonyMediaProtocol.contentsInfoParams(
-                        captureDate = latestDate,
-                        count = RECENT_CONTENT_LIMIT,
-                        slot = slot,
-                    ),
-                    name = "SDIO_GetContentsInfoList",
-                ).data
+                post(onStatus, "Reading camera photo handles…")
 
-                val files = SonyMediaProtocol.parseContentsInfoList(contents).files
-                Log.i(
-                    TAG,
-                    "Sony recent contents slot=$slot dates=${capturedDates.size} files=${files.size}",
-                )
-                files.forEach { file ->
+                val handles = linkedSetOf<Int>()
+
+                for (format in PtpObjectProtocol.PHOTO_FORMATS) {
+                    val result = transactChecked(
+                        opcode = PtpObjectProtocol.OP_GET_OBJECT_HANDLES,
+                        params = listOf(
+                            ALL_STORAGES,
+                            format,
+                            ROOT_ASSOCIATION,
+                        ),
+                        name = "GetObjectHandles(0x${format.toString(16)})",
+                    )
+
+                    val formatHandles =
+                        PtpObjectProtocol.parseHandles(result.data)
                     Log.i(
                         TAG,
-                        "Sony file name=${file.name} format=0x${file.formatCode.toString(16)} " +
-                            "size=${file.size} dimensions=${file.width}x${file.height} " +
-                            "uniqueId=0x${file.uniqueId.toULong().toString(16)}",
+                        "PTP photo handles format=0x${format.toString(16)} " +
+                            "count=${formatHandles.size}",
+                    )
+                    handles.addAll(formatHandles)
+                }
+
+                post(
+                    onStatus,
+                    "Reading metadata for ${handles.size} photos…",
+                )
+
+                val photos = handles.map { handle ->
+                    val result = transactChecked(
+                        opcode = PtpObjectProtocol.OP_GET_OBJECT_INFO,
+                        params = listOf(handle),
+                        name =
+                            "GetObjectInfo(0x${handle.toUInt().toString(16)})",
+                    )
+
+                    PtpObjectProtocol.parseObjectInfo(
+                        handle = handle,
+                        data = result.data,
                     )
                 }
 
-                post(onSuccess, files)
+                Log.i(TAG, "PTP camera photos count=${photos.size}")
+                photos.forEach { photo ->
+                    Log.i(
+                        TAG,
+                        "PTP photo handle=0x${photo.handle.toUInt().toString(16)} " +
+                            "storage=0x${photo.storageId.toUInt().toString(16)} " +
+                            "name=${photo.filename} " +
+                            "format=0x${photo.formatCode.toString(16)} " +
+                            "size=${photo.size} " +
+                            "dimensions=${photo.width}x${photo.height} " +
+                            "captureDate=${photo.captureDate}",
+                    )
+                }
+
+                post(onSuccess, photos)
             } catch (error: Throwable) {
-                val message = "Sony contents listing failed: ${error.message}"
+                val message = "PTP photo listing failed: ${error.message}"
                 Log.e(TAG, message, error)
                 post(onError, message)
             }
@@ -336,7 +366,13 @@ internal class PtpIpProbe(context: Context) {
     ): TransactionResult {
         val result = transact(opcode, params)
         check(result.response.code == SonyMediaProtocol.RESPONSE_OK) {
-            "$name failed with response 0x${result.response.code.toString(16)}."
+            val response = result.response.code
+            val description = when (response) {
+                SonyMediaProtocol.RESPONSE_CAMERA_STATUS_ERROR ->
+                    "Camera Status Error"
+                else -> "Unknown"
+            }
+            "$name failed with response 0x${response.toString(16)} ($description)."
         }
         return result
     }
@@ -495,7 +531,8 @@ internal class PtpIpProbe(context: Context) {
 
     private companion object {
         const val TAG = "AlphaPhoto"
-        const val RECENT_CONTENT_LIMIT = 60
+        const val ALL_STORAGES = -1
+        const val ROOT_ASSOCIATION = 0
 
         const val SOCKET_CONNECT_TIMEOUT_MS = 2_000
         const val SOCKET_READ_TIMEOUT_MS = 15_000
