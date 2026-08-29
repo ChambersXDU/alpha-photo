@@ -110,6 +110,12 @@ internal class PtpIpProbe(context: Context) {
         Thread {
             try {
                 check(
+                    PtpObjectProtocol.OP_GET_STORAGE_IDS in
+                        supportedOperations,
+                ) {
+                    "Camera does not expose standard GetStorageIDs."
+                }
+                check(
                     PtpObjectProtocol.OP_GET_OBJECT_HANDLES in
                         supportedOperations,
                 ) {
@@ -122,37 +128,58 @@ internal class PtpIpProbe(context: Context) {
                     "Camera does not expose standard GetObjectInfo."
                 }
 
-                post(onStatus, "Reading camera photo handles…")
+                post(onStatus, "Reading camera storage…")
+
+                val storageIds = PtpObjectProtocol.parseStorageIds(
+                    transactChecked(
+                        opcode = PtpObjectProtocol.OP_GET_STORAGE_IDS,
+                        name = "GetStorageIDs",
+                    ).data,
+                ).filter { it != 0 }
+
+                check(storageIds.isNotEmpty()) {
+                    "Camera exposed no readable storage."
+                }
+
+                Log.i(
+                    TAG,
+                    "PTP storage IDs=" +
+                        storageIds.joinToString { id ->
+                            "0x${id.toUInt().toString(16)}"
+                        },
+                )
 
                 val handles = linkedSetOf<Int>()
 
-                for (format in PtpObjectProtocol.PHOTO_FORMATS) {
-                    val result = transactChecked(
-                        opcode = PtpObjectProtocol.OP_GET_OBJECT_HANDLES,
-                        params = listOf(
-                            ALL_STORAGES,
-                            format,
-                            ROOT_ASSOCIATION,
-                        ),
-                        name = "GetObjectHandles(0x${format.toString(16)})",
+                for (storageId in storageIds) {
+                    val storageHandles = PtpObjectProtocol.parseHandles(
+                        transactChecked(
+                            opcode = PtpObjectProtocol.OP_GET_OBJECT_HANDLES,
+                            params = listOf(
+                                storageId,
+                                ALL_OBJECT_FORMATS,
+                                ROOT_ASSOCIATION,
+                            ),
+                            name =
+                                "GetObjectHandles(0x${storageId.toUInt().toString(16)})",
+                        ).data,
                     )
 
-                    val formatHandles =
-                        PtpObjectProtocol.parseHandles(result.data)
                     Log.i(
                         TAG,
-                        "PTP photo handles format=0x${format.toString(16)} " +
-                            "count=${formatHandles.size}",
+                        "PTP object handles storage=0x" +
+                            "${storageId.toUInt().toString(16)} " +
+                            "count=${storageHandles.size}",
                     )
-                    handles.addAll(formatHandles)
+                    handles.addAll(storageHandles)
                 }
 
                 post(
                     onStatus,
-                    "Reading metadata for ${handles.size} photos…",
+                    "Reading metadata for ${handles.size} camera objects…",
                 )
 
-                val photos = handles.map { handle ->
+                val objects = handles.map { handle ->
                     val result = transactChecked(
                         opcode = PtpObjectProtocol.OP_GET_OBJECT_INFO,
                         params = listOf(handle),
@@ -166,7 +193,12 @@ internal class PtpIpProbe(context: Context) {
                     )
                 }
 
-                Log.i(TAG, "PTP camera photos count=${photos.size}")
+                val photos = objects.filter(PtpObjectInfo::isPhoto)
+
+                Log.i(
+                    TAG,
+                    "PTP camera objects count=${objects.size} photos=${photos.size}",
+                )
                 photos.forEach { photo ->
                     Log.i(
                         TAG,
@@ -336,17 +368,26 @@ internal class PtpIpProbe(context: Context) {
             "Camera does not expose Sony content-transfer operation 0x9212."
         }
 
+        setContentsTransferMode(SonyMediaProtocol.CONTENTS_TRANSFER_OFF)
+        Thread.sleep(CONTENTS_TRANSFER_RESET_MS)
+        setContentsTransferMode(SonyMediaProtocol.CONTENTS_TRANSFER_ON)
+        Thread.sleep(CONTENTS_TRANSFER_SETTLE_MS)
+
+        Log.i(TAG, "Sony remote-device content transfer enabled")
+        Log.i(TAG, "Sony PTP transfer session ready")
+    }
+
+    private fun setContentsTransferMode(mode: Int) {
         transactChecked(
             opcode = SonyMediaProtocol.OP_SDIO_SET_CONTENTS_TRANSFER_MODE,
             params = listOf(
                 SonyMediaProtocol.CONTENTS_SELECT_REMOTE_DEVICE,
-                SonyMediaProtocol.CONTENTS_TRANSFER_ON,
+                mode,
                 SonyMediaProtocol.CONTENTS_INFO_NONE,
             ),
             name = "SDIO_SetContentsTransferMode",
         )
-        Log.i(TAG, "Sony remote-device content transfer enabled")
-        Log.i(TAG, "Sony PTP transfer session ready")
+        Log.i(TAG, "Sony content transfer mode=$mode")
     }
 
     private fun sdioConnect(phase: Int) {
@@ -531,8 +572,10 @@ internal class PtpIpProbe(context: Context) {
 
     private companion object {
         const val TAG = "AlphaPhoto"
-        const val ALL_STORAGES = -1
+        const val ALL_OBJECT_FORMATS = 0
         const val ROOT_ASSOCIATION = 0
+        const val CONTENTS_TRANSFER_RESET_MS = 200L
+        const val CONTENTS_TRANSFER_SETTLE_MS = 1_500L
 
         const val SOCKET_CONNECT_TIMEOUT_MS = 2_000
         const val SOCKET_READ_TIMEOUT_MS = 15_000
