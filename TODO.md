@@ -15,11 +15,11 @@
 - [x] Connect to the camera over GATT
 - [x] Dump real a7C II GATT services and characteristics
 - [x] Verify the Sony Camera Control service on the real camera
-- [ ] Reproduce the Sony BLE-to-Wi-Fi bootstrap
-- [ ] Read the camera Wi-Fi credentials over BLE
-- [ ] Join the camera Wi-Fi with Android networking APIs
-- [ ] Bind camera traffic to the camera network
-- [ ] Establish a PTP/IP session
+- [x] Reproduce the Sony BLE-to-Wi-Fi bootstrap
+- [x] Read the camera Wi-Fi credentials over BLE
+- [x] Join the camera Wi-Fi with Android networking APIs
+- [x] Bind camera traffic to the camera network
+- [x] Establish a PTP/IP session
 - [ ] Verify reconnect after camera sleep, app switching, and screen lock
 
 ## Spike B — PTP photo pipeline
