@@ -70,6 +70,9 @@ private fun AlphaPhotoApp() {
         mutableStateOf(associationManager.currentAssociation())
     }
     var ptpReady by remember { mutableStateOf(false) }
+    var cameraPhotos by remember {
+        mutableStateOf<List<PtpObjectInfo>>(emptyList())
+    }
     var status by remember {
         mutableStateOf(
             if (association == null) {
@@ -246,6 +249,7 @@ private fun AlphaPhotoApp() {
                                 status = message
                             },
                             onSuccess = { photos ->
+                                cameraPhotos = photos
                                 status =
                                     "Camera: ${photos.size} JPEG/RAW/HEIF photos."
                             },
@@ -258,10 +262,32 @@ private fun AlphaPhotoApp() {
                     Text("List camera photos")
                 }
 
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = ptpReady && cameraPhotos.isNotEmpty(),
+                    onClick = {
+                        ptpIpProbe.probeMediaTransfer(
+                            photos = cameraPhotos,
+                            onStatus = { message ->
+                                status = message
+                            },
+                            onSuccess = { message ->
+                                status = message
+                            },
+                            onError = { message ->
+                                status = message
+                            },
+                        )
+                    },
+                ) {
+                    Text("Probe media transfer")
+                }
+
                 Text(
                     text =
                         "Connect runs BLE → camera Wi-Fi → full Sony PTP transfer-session setup. " +
-                            "Photo listing uses standard PTP GetObjectHandles/GetObjectInfo in Sony content-transfer mode.",
+                            "Photo listing uses standard PTP objects. Media probe exercises GetThumb, " +
+                            "GetPartialObject, and streamed GetObject without storing a full original.",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
