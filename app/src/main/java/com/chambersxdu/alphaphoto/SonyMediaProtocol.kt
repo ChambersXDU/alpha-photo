@@ -39,6 +39,7 @@ internal object SonyMediaProtocol {
     const val OP_SDIO_GET_CONTENTS_COMPRESSED_DATA = 0x923E
 
     const val RESPONSE_OK = 0x2001
+    const val RESPONSE_CAMERA_STATUS_ERROR = 0xA106
     const val FUNCTION_MODE_CONTENTS_TRANSFER = 1
     const val CONTENTS_SELECT_REMOTE_DEVICE = 2
     const val CONTENTS_TRANSFER_ON = 1
