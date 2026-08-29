@@ -46,6 +46,24 @@ class PtpEventProtocolTest {
     }
 
     @Test
+    fun namesSonyMediaEvents() {
+        assertEquals(
+            "Sony Object Added",
+            PtpIpProtocol.eventName(PtpIpProtocol.EVENT_SONY_OBJECT_ADDED),
+        )
+        assertEquals(
+            "Sony Captured",
+            PtpIpProtocol.eventName(PtpIpProtocol.EVENT_SONY_CAPTURED),
+        )
+        assertEquals(
+            "Sony Content Info List Changed",
+            PtpIpProtocol.eventName(
+                PtpIpProtocol.EVENT_SONY_CONTENT_INFO_LIST_CHANGED,
+            ),
+        )
+    }
+
+    @Test
     fun parsesEventWithoutParameters() {
         val body = ByteBuffer.allocate(6)
             .order(ByteOrder.LITTLE_ENDIAN)
