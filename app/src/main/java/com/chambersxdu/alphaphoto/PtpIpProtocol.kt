@@ -60,6 +60,21 @@ internal object PtpIpProtocol {
     const val EVENT_SONY_CONTENTS_TRANSFER = 0xC20D
     const val EVENT_SONY_CONTENT_INFO_LIST_CHANGED = 0xC234
 
+    fun eventName(code: Int): String = when (code) {
+        EVENT_OBJECT_ADDED -> "Object Added"
+        EVENT_OBJECT_REMOVED -> "Object Removed"
+        EVENT_OBJECT_INFO_CHANGED -> "Object Info Changed"
+        EVENT_REQUEST_OBJECT_TRANSFER -> "Request Object Transfer"
+        EVENT_CAPTURE_COMPLETE -> "Capture Complete"
+        EVENT_SONY_OBJECT_ADDED -> "Sony Object Added"
+        EVENT_SONY_OBJECT_REMOVED -> "Sony Object Removed"
+        EVENT_SONY_DEVICE_PROP_CHANGED -> "Sony Device Property Changed"
+        EVENT_SONY_CAPTURED -> "Sony Captured"
+        EVENT_SONY_CONTENTS_TRANSFER -> "Sony Contents Transfer"
+        EVENT_SONY_CONTENT_INFO_LIST_CHANGED -> "Sony Content Info List Changed"
+        else -> "Event 0x${code.toString(16)}"
+    }
+
     fun encodePacket(
         type: Int,
         body: ByteArray = byteArrayOf(),
