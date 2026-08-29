@@ -52,6 +52,15 @@ internal class LittleEndianCursor(
         }
     }
 
+    fun u32Array(): List<Int> {
+        val count = u32()
+        require(count <= Int.MAX_VALUE)
+
+        return List(count.toInt()) {
+            u32().toInt()
+        }
+    }
+
     private fun take(count: Int): ByteArray {
         require(count >= 0)
         require(offset + count <= data.size) {
