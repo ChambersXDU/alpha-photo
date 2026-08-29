@@ -90,6 +90,24 @@ class SonyMediaProtocolTest {
         )
     }
 
+
+    @Test
+    fun buildsPartialLargeObjectParameters() {
+        assertEquals(
+            listOf(
+                0x40000023,
+                0x55667788,
+                0x00000001,
+                0x00100000,
+            ),
+            SonyMediaProtocol.partialLargeObjectParams(
+                handle = 0x40000023,
+                offset = 0x0000000155667788L,
+                maxBytes = 0x00100000,
+            ),
+        )
+    }
+
     @Test
     fun buildsCompressedDataParameters() {
         val file = SonyContentFile(
