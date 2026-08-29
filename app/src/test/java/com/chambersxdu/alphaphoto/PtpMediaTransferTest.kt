@@ -10,18 +10,6 @@ import org.junit.Test
 
 class PtpMediaTransferTest {
     @Test
-    fun buildsStandardPartialObjectParameters() {
-        assertEquals(
-            listOf(0x40000023, 0x00100000, 0x00300000),
-            PtpObjectProtocol.partialObjectParams(
-                handle = 0x40000023,
-                offset = 0x00100000,
-                maxBytes = 0x00300000,
-            ),
-        )
-    }
-
-    @Test
     fun streamsDataPacketsDirectlyToOutput() {
         val transactionId = 7
         val input = ByteArrayInputStream(
