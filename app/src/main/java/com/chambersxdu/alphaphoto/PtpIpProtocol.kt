@@ -49,6 +49,8 @@ internal object PtpIpProtocol {
 
     const val EVENT_OBJECT_ADDED = 0x4002
     const val EVENT_OBJECT_REMOVED = 0x4003
+    const val EVENT_STORE_ADDED = 0x4004
+    const val EVENT_STORE_REMOVED = 0x4005
     const val EVENT_OBJECT_INFO_CHANGED = 0x4007
     const val EVENT_REQUEST_OBJECT_TRANSFER = 0x4009
     const val EVENT_CAPTURE_COMPLETE = 0x400D
@@ -63,6 +65,8 @@ internal object PtpIpProtocol {
     fun eventName(code: Int): String = when (code) {
         EVENT_OBJECT_ADDED -> "Object Added"
         EVENT_OBJECT_REMOVED -> "Object Removed"
+        EVENT_STORE_ADDED -> "Store Added"
+        EVENT_STORE_REMOVED -> "Store Removed"
         EVENT_OBJECT_INFO_CHANGED -> "Object Info Changed"
         EVENT_REQUEST_OBJECT_TRANSFER -> "Request Object Transfer"
         EVENT_CAPTURE_COMPLETE -> "Capture Complete"

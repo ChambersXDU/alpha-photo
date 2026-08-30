@@ -11,6 +11,7 @@ internal data class PtpObjectInfo(
     val thumbnailHeight: Int = 0,
     val width: Int,
     val height: Int,
+    val parentObject: Int,
     val associationType: Int,
     val filename: String,
     val captureDate: String,
@@ -62,7 +63,7 @@ internal object PtpObjectProtocol {
         val height = cursor.u32().toInt()
 
         cursor.u32()
-        cursor.u32()
+        val parentObject = cursor.u32().toInt()
         val associationType = cursor.u16()
         cursor.u32()
         cursor.u32()
@@ -83,6 +84,7 @@ internal object PtpObjectProtocol {
             thumbnailHeight = thumbnailHeight,
             width = width,
             height = height,
+            parentObject = parentObject,
             associationType = associationType,
             filename = filename,
             captureDate = captureDate,

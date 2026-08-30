@@ -8,6 +8,7 @@ internal object PtpResponseCodes {
     const val INVALID_OBJECT_HANDLE = 0x2009
     const val DEVICE_PROP_NOT_SUPPORTED = 0x200A
     const val INVALID_OBJECT_FORMAT_CODE = 0x200B
+    const val STORE_NOT_AVAILABLE = 0x2013
     const val DEVICE_BUSY = 0x2019
     const val TRANSACTION_CANCELED = 0x201F
 
@@ -19,6 +20,7 @@ internal object PtpResponseCodes {
         INVALID_OBJECT_HANDLE -> "Invalid Object Handle"
         DEVICE_PROP_NOT_SUPPORTED -> "Device Property Not Supported"
         INVALID_OBJECT_FORMAT_CODE -> "Invalid Object Format Code"
+        STORE_NOT_AVAILABLE -> "Store Not Available"
         DEVICE_BUSY -> "Device Busy"
         TRANSACTION_CANCELED -> "Transaction Canceled"
         0xA101 -> "Authentication Failed"

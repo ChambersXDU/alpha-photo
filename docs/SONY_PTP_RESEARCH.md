@@ -33,6 +33,10 @@ operation's behavior merely because it appears in DeviceInfo. Prefer, in order:
 - Standard GetPartialObject (0x101B) returned 0x2009 for that same valid JPEG handle.
   0x2009 is standard PTP InvalidObjectHandle.
 - 0x923B SDIO_GetCapturedDateList returned Sony 0xA106 Camera Status Error on this body.
+- A 2026-08-30 run exposed a content-transfer readiness race: after an OFF -> 200 ms
+  -> ON reset, the camera emitted 0xC20D with parameter 2 (Status Error), then
+  GetStorageIDs returned 0x2013 StoreNotAvailable. No StoreAdded event was emitted.
+  An OK response from 0x9212 therefore does not mean that storage is ready.
 
 ## Official ILCE-7CM2 operation support
 
@@ -75,8 +79,11 @@ PTP connected
 -> ready to transfer content
 -> SDIO_GetPartialLargeObject, etc.
 
-Therefore a fixed sleep is only a pragmatic fallback. Product code should eventually gate
-readiness on protocol state (StoreAdded / D295) rather than assuming 1500 ms is always enough.
+Therefore a fixed sleep is not a valid readiness signal. Product code enables transfer on a
+fresh content-transfer session, waits for StoreAdded, then reads the single 0xD295 property via
+0x9251 and requires its current value to equal 1 before accessing storage. A 0xC20D error event
+ends the transition immediately with its documented error instead of continuing to
+GetStorageIDs.
 
 ## 0x9211 SDIO_GetPartialLargeObject
 
@@ -210,6 +217,7 @@ At minimum decode these before more hardware probes:
 - 0x2009 InvalidObjectHandle
 - 0x200A DevicePropNotSupported
 - 0x200B InvalidObjectFormatCode
+- 0x2013 StoreNotAvailable
 - 0x2019 DeviceBusy
 - 0x201F TransactionCanceled
 - 0xA101..0xA106 Sony vendor errors, especially 0xA106 Camera Status Error.

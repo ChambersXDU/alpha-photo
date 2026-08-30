@@ -9,6 +9,7 @@ class PtpResponseCodeTest {
         assertEquals("OK", PtpResponseCodes.describe(0x2001))
         assertEquals("Invalid Storage ID", PtpResponseCodes.describe(0x2008))
         assertEquals("Invalid Object Handle", PtpResponseCodes.describe(0x2009))
+        assertEquals("Store Not Available", PtpResponseCodes.describe(0x2013))
         assertEquals("Device Busy", PtpResponseCodes.describe(0x2019))
         assertEquals("Camera Status Error", PtpResponseCodes.describe(0xA106))
     }

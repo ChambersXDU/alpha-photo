@@ -34,6 +34,7 @@ internal object SonyMediaProtocol {
     const val OP_SDIO_GET_PARTIAL_LARGE_OBJECT = 0x9211
     const val OP_SDIO_SET_CONTENTS_TRANSFER_MODE = 0x9212
     const val OP_SDIO_GET_VENDOR_CODE_VERSION = 0x9216
+    const val OP_SDIO_GET_EXT_DEVICE_PROP = 0x9251
     const val OP_SDIO_GET_CAPTURED_DATE_LIST = 0x923B
     const val OP_SDIO_GET_CONTENTS_INFO_LIST = 0x923C
     const val OP_SDIO_GET_CONTENTS_DATA = 0x923D
@@ -46,10 +47,48 @@ internal object SonyMediaProtocol {
     const val CONTENTS_TRANSFER_OFF = 0
     const val CONTENTS_TRANSFER_ON = 1
     const val CONTENTS_INFO_NONE = 0
+    const val PROP_CONTENTS_TRANSFER_ENABLE_STATUS = 0xD295
     const val COMPRESSED_DATA_THUMBNAIL = 1
     const val COMPRESSED_DATA_SCREENNAIL = 2
     const val VENDOR_FLAG_THRESHOLD = 310
     const val ORIGINAL_CHUNK_SIZE = 3_145_728
+
+    fun parseThumbnailJpeg(data: ByteArray): ByteArray {
+        val cursor = LittleEndianCursor(data)
+        val jpegLength = cursor.u32()
+        require(jpegLength == data.size.toLong() - 4L) {
+            "Sony thumbnail declared $jpegLength bytes but returned " +
+                "${data.size - 4}."
+        }
+        require(jpegLength <= Int.MAX_VALUE)
+        val jpeg = cursor.bytes(jpegLength.toInt())
+        require(
+            jpeg.size >= 4 &&
+                jpeg[0] == 0xFF.toByte() &&
+                jpeg[1] == 0xD8.toByte() &&
+                jpeg[jpeg.lastIndex - 1] == 0xFF.toByte() &&
+                jpeg[jpeg.lastIndex] == 0xD9.toByte(),
+        ) {
+            "Sony thumbnail payload is not a complete JPEG."
+        }
+        return jpeg
+    }
+
+    fun parseContentsTransferEnableStatus(data: ByteArray): Int {
+        val cursor = LittleEndianCursor(data)
+        require(cursor.u16() == PROP_CONTENTS_TRANSFER_ENABLE_STATUS)
+        require(cursor.u16() == DATA_TYPE_UINT8)
+        require(cursor.u8() == GET_ONLY)
+        cursor.u8()
+        require(cursor.u8() == RESERVED)
+        return cursor.u8()
+    }
+
+    fun contentsTransferEventDescription(eventId: Int): String = when (eventId) {
+        1 -> "Device Busy"
+        2 -> "Status Error"
+        else -> "Unknown event $eventId"
+    }
 
     fun parseCapturedDates(data: ByteArray): List<Long> {
         val cursor = LittleEndianCursor(data)
@@ -74,7 +113,7 @@ internal object SonyMediaProtocol {
             (captureDate ushr 32).toInt(),
             count,
             slot,
-            0,
+            1,
         )
     }
 
@@ -184,6 +223,9 @@ internal object SonyMediaProtocol {
     }
 
     private val CONTENT_TYPES = setOf(1, 4, 8, 16)
+    private const val DATA_TYPE_UINT8 = 0x0002
+    private const val GET_ONLY = 0
+    private const val RESERVED = 0
 
     private fun parseFile(
         cursor: LittleEndianCursor,

@@ -51,7 +51,7 @@ class PtpObjectProtocolTest {
             u32(7008)
             u32(4672)
             u32(14)
-            u32(0)
+            u32(0x00ABCDEF)
             u16(0)
             u32(0)
             u32(42)
@@ -74,6 +74,7 @@ class PtpObjectProtocolTest {
                 thumbnailHeight = 120,
                 width = 7008,
                 height = 4672,
+                parentObject = 0x00ABCDEF,
                 associationType = 0,
                 filename = "DSC00001.ARW",
                 captureDate = "20260829T084500",
@@ -94,6 +95,7 @@ class PtpObjectProtocolTest {
             size = 10,
             width = 7008,
             height = 4672,
+            parentObject = 0,
             associationType = 0,
             filename = "DSC00001.ARW",
             captureDate = "20260829T084500",
@@ -111,6 +113,7 @@ class PtpObjectProtocolTest {
             size = 0,
             width = 0,
             height = 0,
+            parentObject = 0,
             associationType = 1,
             filename = "2026-08-29",
             captureDate = "",

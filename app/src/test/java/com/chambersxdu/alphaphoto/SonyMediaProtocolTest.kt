@@ -3,10 +3,60 @@ package com.chambersxdu.alphaphoto
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class SonyMediaProtocolTest {
+    @Test
+    fun parsesLengthPrefixedThumbnailJpeg() {
+        val jpeg = byteArrayOf(
+            0xFF.toByte(), 0xD8.toByte(),
+            0x01, 0x02,
+            0xFF.toByte(), 0xD9.toByte(),
+        )
+        val payload = writer {
+            u32(jpeg.size)
+            bytes(jpeg)
+        }
+
+        assertArrayEquals(
+            jpeg,
+            SonyMediaProtocol.parseThumbnailJpeg(payload),
+        )
+    }
+
+    @Test
+    fun parsesContentsTransferEnableStatus() {
+        val data = writer {
+            u16(SonyMediaProtocol.PROP_CONTENTS_TRANSFER_ENABLE_STATUS)
+            u16(0x0002)
+            bytes(byteArrayOf(0, 0, 0, 1, 2))
+            u16(2)
+            bytes(byteArrayOf(0, 1))
+            u16(0)
+        }
+
+        assertEquals(
+            1,
+            SonyMediaProtocol.parseContentsTransferEnableStatus(data),
+        )
+    }
+
+    @Test
+    fun parsesDisabledContentsTransferEnableStatusFromCamera() {
+        val data = byteArrayOf(
+            0x95.toByte(), 0xD2.toByte(), 0x02, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x02, 0x00,
+            0x00, 0x00, 0x00,
+        )
+
+        assertEquals(
+            0,
+            SonyMediaProtocol.parseContentsTransferEnableStatus(data),
+        )
+    }
+
     @Test
     fun parsesCapturedDates() {
         val data = writer {
@@ -81,7 +131,7 @@ class SonyMediaProtocolTest {
     @Test
     fun buildsContentsInfoParameters() {
         assertEquals(
-            listOf(0x55667788, 0x11223344, 60, 2, 0),
+            listOf(0x55667788, 0x11223344, 60, 2, 1),
             SonyMediaProtocol.contentsInfoParams(
                 captureDate = 0x1122334455667788L,
                 count = 60,

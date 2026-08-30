@@ -4,26 +4,37 @@ import android.companion.AssociationInfo
 import android.companion.AssociationRequest
 import android.companion.BluetoothLeDeviceFilter
 import android.companion.CompanionDeviceManager
+import android.companion.ObservingDevicePresenceRequest
 import android.content.Context
 import android.content.IntentSender
 import java.util.regex.Pattern
 
-class CameraAssociationManager(context: Context) {
+internal class CameraAssociationManager(context: Context) {
     private val appContext = context.applicationContext
     private val deviceManager = appContext.getSystemService(CompanionDeviceManager::class.java)
 
     fun currentAssociation(): AssociationInfo? =
         deviceManager.myAssociations.firstOrNull {
-            it.displayName?.toString() == CAMERA_NAME
+            SupportedCameras.fromAssociationName(it.displayName) != null
         }
 
+    fun observePresence(association: AssociationInfo) {
+        val request = ObservingDevicePresenceRequest.Builder()
+            .setAssociationId(association.id)
+            .build()
+        deviceManager.startObservingDevicePresence(request)
+    }
+
     fun associate(
+        model: CameraModel,
         onPending: (IntentSender) -> Unit,
         onCreated: (AssociationInfo) -> Unit,
         onFailure: (CharSequence?) -> Unit,
     ) {
         val filter = BluetoothLeDeviceFilter.Builder()
-            .setNamePattern(Pattern.compile("^$CAMERA_NAME$"))
+            .setNamePattern(
+                Pattern.compile("^${Pattern.quote(model.associationName)}$"),
+            )
             .build()
 
         val request = AssociationRequest.Builder()
@@ -50,7 +61,4 @@ class CameraAssociationManager(context: Context) {
         )
     }
 
-    companion object {
-        const val CAMERA_NAME = "ILCE-7CM2"
-    }
 }

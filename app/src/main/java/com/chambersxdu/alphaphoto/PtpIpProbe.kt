@@ -4,10 +4,17 @@ import android.content.Context
 import android.net.Network
 import android.util.Log
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.security.SecureRandom
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 internal class PtpIpProbe(context: Context) {
     private val appContext = context.applicationContext
@@ -16,26 +23,53 @@ internal class PtpIpProbe(context: Context) {
     private var eventSocket: Socket? = null
     private var transactionId = 0
     private var supportedOperations = emptySet<Int>()
+    private val commandExecutor = ThreadPoolExecutor(
+        1,
+        1,
+        0L,
+        TimeUnit.MILLISECONDS,
+        LinkedBlockingQueue(),
+        { task -> Thread(task, "AlphaPhotoPtpCommand") },
+    )
 
     @Volatile
-    private var closed = true
+    private var onPhotoAdded: ((PtpObjectInfo) -> Unit)? = null
+
+    @Volatile
+    private var onConnectionLost: ((String) -> Unit)? = null
 
     @Volatile
     private var eventFailure: Throwable? = null
+
+    @Volatile
+    private var contentsTransferLatch: CountDownLatch? = null
+
+    @Volatile
+    private var contentsTransferStorageId: Int? = null
+
+    @Volatile
+    private var contentsTransferErrorId: Int? = null
+
+    private val contentsTransferLock = ReentrantLock()
+    private val contentsTransferChanged = contentsTransferLock.newCondition()
+    private var contentsTransferPropertyVersion = 0L
 
     fun initialize(
         cameraNetwork: CameraNetwork,
         onStatus: (String) -> Unit,
         onSuccess: () -> Unit,
+        onPhotoAdded: (PtpObjectInfo) -> Unit,
+        onDisconnected: (String) -> Unit,
         onError: (String) -> Unit,
     ) {
-        Thread {
+        commandExecutor.execute {
             try {
                 check(commandSocket == null)
                 check(eventSocket == null)
 
-                closed = false
                 eventFailure = null
+                this.onPhotoAdded = onPhotoAdded
+                onConnectionLost = onDisconnected
 
                 val host = checkNotNull(cameraNetwork.gateway.hostAddress)
 
@@ -100,7 +134,7 @@ internal class PtpIpProbe(context: Context) {
                 Log.e(TAG, message, error)
                 post(onError, message)
             }
-        }.start()
+        }
     }
 
     fun listCameraPhotos(
@@ -108,7 +142,7 @@ internal class PtpIpProbe(context: Context) {
         onSuccess: (List<PtpObjectInfo>) -> Unit,
         onError: (String) -> Unit,
     ) {
-        Thread {
+        commandExecutor.execute {
             try {
                 check(
                     PtpObjectProtocol.OP_GET_STORAGE_IDS in
@@ -180,21 +214,11 @@ internal class PtpIpProbe(context: Context) {
                     "Reading metadata for ${handles.size} camera objects…",
                 )
 
-                val objects = handles.map { handle ->
-                    val result = transactChecked(
-                        opcode = PtpObjectProtocol.OP_GET_OBJECT_INFO,
-                        params = listOf(handle),
-                        name =
-                            "GetObjectInfo(0x${handle.toUInt().toString(16)})",
-                    )
-
-                    PtpObjectProtocol.parseObjectInfo(
-                        handle = handle,
-                        data = result.data,
-                    )
-                }
-
-                val photos = objects.filter(PtpObjectInfo::isPhoto)
+                val objects = handles.map(::readObjectInfo)
+                val photos = CameraPhotoCatalog.merge(
+                    current = emptyList(),
+                    additions = objects.filter(PtpObjectInfo::isPhoto),
+                )
 
                 Log.i(
                     TAG,
@@ -216,13 +240,145 @@ internal class PtpIpProbe(context: Context) {
                     )
                 }
 
+                probeSonyScreennail()
+
                 post(onSuccess, photos)
             } catch (error: Throwable) {
                 val message = "PTP photo listing failed: ${error.message}"
                 Log.e(TAG, message, error)
                 post(onError, message)
             }
-        }.start()
+        }
+    }
+
+    private fun probeSonyScreennail() {
+        try {
+            check(
+                SonyMediaProtocol.OP_SDIO_GET_CAPTURED_DATE_LIST in
+                    supportedOperations,
+            )
+            check(
+                SonyMediaProtocol.OP_SDIO_GET_CONTENTS_INFO_LIST in
+                    supportedOperations,
+            )
+            check(
+                SonyMediaProtocol.OP_SDIO_GET_CONTENTS_COMPRESSED_DATA in
+                    supportedOperations,
+            )
+
+            val dates = SonyMediaProtocol.parseCapturedDates(
+                transactChecked(
+                    opcode = SonyMediaProtocol.OP_SDIO_GET_CAPTURED_DATE_LIST,
+                    params = listOf(1),
+                    name = "SDIO_GetCapturedDateList",
+                ).data,
+            )
+            Log.i(TAG, "Sony screennail probe dates=${dates.size}")
+            check(dates.isNotEmpty())
+
+            val files = SonyMediaProtocol.parseContentsInfoList(
+                transactChecked(
+                    opcode = SonyMediaProtocol.OP_SDIO_GET_CONTENTS_INFO_LIST,
+                    params = SonyMediaProtocol.contentsInfoParams(
+                        captureDate = dates.max(),
+                        count = 8,
+                        slot = 1,
+                    ),
+                    name = "SDIO_GetContentsInfoList",
+                ).data,
+            ).files
+            Log.i(TAG, "Sony screennail probe files=${files.size}")
+            val file = files.first()
+
+            val data = transactChecked(
+                opcode = SonyMediaProtocol.OP_SDIO_GET_CONTENTS_COMPRESSED_DATA,
+                params = SonyMediaProtocol.compressedDataParams(
+                    file = file,
+                    type = SonyMediaProtocol.COMPRESSED_DATA_SCREENNAIL,
+                ),
+                name = "SDIO_GetContentCompressedData(screennail)",
+            ).data
+            File(appContext.cacheDir, "sony-screennail-probe.bin")
+                .writeBytes(data)
+            Log.i(
+                TAG,
+                "Sony screennail probe name=${file.name} bytes=${data.size} head=" +
+                    data.take(16).joinToString("") { byte ->
+                        "%02X".format(byte)
+                    },
+            )
+        } catch (error: Throwable) {
+            Log.e(TAG, "Sony screennail probe failed: ${error.message}", error)
+        }
+    }
+
+    fun loadThumbnail(
+        photo: PtpObjectInfo,
+        onSuccess: (ByteArray) -> Unit,
+        onError: (String) -> Unit,
+    ) {
+        commandExecutor.execute {
+            try {
+                check(PtpObjectProtocol.OP_GET_THUMB in supportedOperations) {
+                    "Camera does not expose standard GetThumb."
+                }
+
+                val thumbnail = transactChecked(
+                    opcode = PtpObjectProtocol.OP_GET_THUMB,
+                    params = listOf(photo.handle),
+                    name = "GetThumb(${photo.filename})",
+                ).data
+
+                Log.i(
+                    TAG,
+                    "PTP thumbnail loaded name=${photo.filename} bytes=${thumbnail.size}",
+                )
+                post(onSuccess, thumbnail)
+            } catch (error: Throwable) {
+                val message =
+                    "Thumbnail failed for ${photo.filename}: ${error.message}"
+                Log.e(TAG, message, error)
+                post(onError, message)
+            }
+        }
+    }
+
+    fun exportOriginal(
+        photo: PtpObjectInfo,
+        openOutput: () -> OutputStream,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit,
+    ) {
+        commandExecutor.execute {
+            try {
+                check(PtpObjectProtocol.OP_GET_OBJECT in supportedOperations) {
+                    "Camera does not expose standard GetObject."
+                }
+
+                val transfer = openOutput().use { output ->
+                    transactCheckedTo(
+                        opcode = PtpObjectProtocol.OP_GET_OBJECT,
+                        params = listOf(photo.handle),
+                        name = "GetObject(${photo.filename})",
+                        output = output,
+                    )
+                }
+
+                check(transfer.dataLength == photo.size) {
+                    "GetObject returned ${transfer.dataLength} bytes; expected ${photo.size}."
+                }
+
+                Log.i(
+                    TAG,
+                    "PTP original exported name=${photo.filename} bytes=${transfer.dataLength}",
+                )
+                appContext.mainExecutor.execute(onSuccess)
+            } catch (error: Throwable) {
+                val message = "Export failed for ${photo.filename}: ${error.message}"
+                Log.e(TAG, message, error)
+                post(onError, message)
+            }
+        }
     }
 
     fun streamOriginal(
@@ -263,7 +419,7 @@ internal class PtpIpProbe(context: Context) {
         onSuccess: (String) -> Unit,
         onError: (String) -> Unit,
     ) {
-        Thread {
+        commandExecutor.execute {
             try {
                 check(PtpObjectProtocol.OP_GET_THUMB in supportedOperations) {
                     "Camera does not expose standard GetThumb."
@@ -432,24 +588,35 @@ internal class PtpIpProbe(context: Context) {
                 Log.e(TAG, message, error)
                 post(onError, message)
             }
-        }.start()
+        }
     }
 
     fun close() {
-        closed = true
-        commandSocket?.close()
+        commandExecutor.queue.clear()
+        contentsTransferLatch?.countDown()
+        val command = commandSocket
         commandSocket = null
-        eventSocket?.close()
+        val event = eventSocket
         eventSocket = null
+        command?.close()
+        event?.close()
         transactionId = 0
         supportedOperations = emptySet()
         eventFailure = null
+        onPhotoAdded = null
+        onConnectionLost = null
+        contentsTransferLatch = null
+        contentsTransferStorageId = null
+        contentsTransferErrorId = null
+        contentsTransferLock.withLock {
+            contentsTransferChanged.signalAll()
+        }
     }
 
     private fun startEventReader(socket: Socket) {
         Thread {
             try {
-                while (!closed) {
+                while (eventSocket === socket) {
                     val packet = PtpIpProtocol.readPacket(socket.getInputStream())
 
                     when (packet.type) {
@@ -468,6 +635,7 @@ internal class PtpIpProbe(context: Context) {
                                         "0x${parameter.toUInt().toString(16)}"
                                     },
                             )
+                            handleCameraEvent(event)
                         }
 
                         PtpIpProtocol.PROBE_REQUEST -> {
@@ -489,9 +657,17 @@ internal class PtpIpProbe(context: Context) {
                     }
                 }
             } catch (error: Throwable) {
-                if (!closed) {
+                if (eventSocket === socket) {
                     eventFailure = error
                     Log.e(TAG, "PTP/IP event channel failed", error)
+                    val callback = onConnectionLost
+                    if (callback != null) {
+                        post(
+                            callback,
+                            "PTP/IP event channel failed: " +
+                                (error.message ?: error.javaClass.simpleName),
+                        )
+                    }
                 }
             }
         }.apply {
@@ -560,13 +736,205 @@ internal class PtpIpProbe(context: Context) {
             "Camera does not expose Sony content-transfer operation 0x9212."
         }
 
-        setContentsTransferMode(SonyMediaProtocol.CONTENTS_TRANSFER_OFF)
-        Thread.sleep(CONTENTS_TRANSFER_RESET_MS)
-        setContentsTransferMode(SonyMediaProtocol.CONTENTS_TRANSFER_ON)
-        Thread.sleep(CONTENTS_TRANSFER_SETTLE_MS)
+        check(
+            SonyMediaProtocol.OP_SDIO_GET_EXT_DEVICE_PROP in
+                supportedOperations,
+        ) {
+            "Camera does not expose Sony property operation 0x9251."
+        }
 
-        Log.i(TAG, "Sony remote-device content transfer enabled")
+        contentsTransferStorageId = null
+        contentsTransferErrorId = null
+        contentsTransferLock.withLock {
+            contentsTransferPropertyVersion = 0L
+        }
+        contentsTransferLatch = CountDownLatch(1)
+        setContentsTransferMode(SonyMediaProtocol.CONTENTS_TRANSFER_ON)
+
+        val storageId = awaitContentsTransferStorage()
+        awaitContentsTransferEnabled()
+        contentsTransferLatch = null
+
+        Log.i(
+            TAG,
+            "Sony remote-device content transfer enabled " +
+                "storage=0x${storageId.toUInt().toString(16)} property=0x1",
+        )
         Log.i(TAG, "Sony PTP transfer session ready")
+    }
+
+    private fun handleCameraEvent(event: PtpEvent) {
+        if (event.code == PtpIpProtocol.EVENT_STORE_ADDED) {
+            val storageId = event.params.firstOrNull()
+            if (storageId == null) {
+                Log.e(TAG, "Store Added event did not include a storage ID.")
+            } else {
+                contentsTransferStorageId = storageId
+                contentsTransferLatch?.countDown()
+            }
+            return
+        }
+
+        if (event.code == PtpIpProtocol.EVENT_SONY_CONTENTS_TRANSFER) {
+            val eventId = event.params.firstOrNull()
+            if (eventId != null && eventId != 0 && contentsTransferLatch != null) {
+                contentsTransferErrorId = eventId
+                contentsTransferLatch?.countDown()
+                contentsTransferLock.withLock {
+                    contentsTransferChanged.signalAll()
+                }
+            }
+            return
+        }
+
+        if (
+            event.code == PtpIpProtocol.EVENT_SONY_DEVICE_PROP_CHANGED &&
+            contentsTransferLatch != null
+        ) {
+            contentsTransferLock.withLock {
+                contentsTransferPropertyVersion++
+                contentsTransferChanged.signalAll()
+            }
+            return
+        }
+
+        if (event.code != PtpIpProtocol.EVENT_SONY_OBJECT_ADDED) {
+            return
+        }
+
+        val handle = event.params.firstOrNull()
+        if (handle == null) {
+            Log.e(TAG, "Sony Object Added event did not include an object handle.")
+            return
+        }
+
+        commandExecutor.execute {
+            try {
+                val photo = readObjectInfo(handle)
+                if (photo.isPhoto()) {
+                    val callback = onPhotoAdded
+                    if (callback != null) {
+                        post(callback, photo)
+                    }
+                }
+            } catch (error: Throwable) {
+                Log.e(
+                    TAG,
+                    "New camera object metadata failed handle=0x" +
+                        handle.toUInt().toString(16),
+                    error,
+                )
+            }
+        }
+    }
+
+    private fun awaitContentsTransferStorage(): Int {
+        val latch = checkNotNull(contentsTransferLatch)
+        check(
+            latch.await(
+                CONTENTS_TRANSFER_READY_TIMEOUT_MS,
+                TimeUnit.MILLISECONDS,
+            ),
+        ) {
+            "Sony did not report Store Added after enabling content transfer."
+        }
+
+        val errorId = contentsTransferErrorId
+        if (errorId != null) {
+            error(
+                "Sony content transfer failed: " +
+                    SonyMediaProtocol.contentsTransferEventDescription(errorId),
+            )
+        }
+
+        return checkNotNull(contentsTransferStorageId) {
+            "Sony content transfer ended before storage became available."
+        }
+    }
+
+    private fun awaitContentsTransferEnabled() {
+        val deadline = System.nanoTime() +
+            TimeUnit.MILLISECONDS.toNanos(CONTENTS_TRANSFER_READY_TIMEOUT_MS)
+        var observedVersion = contentsTransferLock.withLock {
+            contentsTransferPropertyVersion
+        }
+
+        while (true) {
+            throwContentsTransferError()
+            val propertyData = transactChecked(
+                opcode = SonyMediaProtocol.OP_SDIO_GET_EXT_DEVICE_PROP,
+                params = listOf(
+                    SonyMediaProtocol.PROP_CONTENTS_TRANSFER_ENABLE_STATUS,
+                ),
+                name = "SDIO_GetExtDeviceProp(0xD295)",
+            ).data
+            Log.i(
+                TAG,
+                "Sony content transfer property 0xD295 raw=" +
+                    propertyData.joinToString("") { byte ->
+                        "%02X".format(byte)
+                    },
+            )
+            val enabled =
+                SonyMediaProtocol.parseContentsTransferEnableStatus(propertyData)
+            Log.i(TAG, "Sony content transfer property 0xD295 current=$enabled")
+            throwContentsTransferError()
+            if (enabled == SonyMediaProtocol.CONTENTS_TRANSFER_ON) {
+                return
+            }
+            check(enabled == SonyMediaProtocol.CONTENTS_TRANSFER_OFF) {
+                "Sony content transfer property 0xD295 has unknown value $enabled."
+            }
+
+            observedVersion = awaitContentsTransferPropertyChange(
+                observedVersion = observedVersion,
+                deadline = deadline,
+            )
+        }
+    }
+
+    private fun awaitContentsTransferPropertyChange(
+        observedVersion: Long,
+        deadline: Long,
+    ): Long = contentsTransferLock.withLock {
+        while (
+            contentsTransferPropertyVersion == observedVersion &&
+            contentsTransferErrorId == null &&
+            contentsTransferLatch != null
+        ) {
+            val remaining = deadline - System.nanoTime()
+            check(remaining > 0L) {
+                "Sony content transfer property 0xD295 did not become 1."
+            }
+            contentsTransferChanged.awaitNanos(remaining)
+        }
+
+        throwContentsTransferError()
+        check(contentsTransferLatch != null) {
+            "Sony content transfer ended before property 0xD295 became 1."
+        }
+        contentsTransferPropertyVersion
+    }
+
+    private fun throwContentsTransferError() {
+        val errorId = contentsTransferErrorId ?: return
+        error(
+            "Sony content transfer failed: " +
+                SonyMediaProtocol.contentsTransferEventDescription(errorId),
+        )
+    }
+
+    private fun readObjectInfo(handle: Int): PtpObjectInfo {
+        val result = transactChecked(
+            opcode = PtpObjectProtocol.OP_GET_OBJECT_INFO,
+            params = listOf(handle),
+            name = "GetObjectInfo(0x${handle.toUInt().toString(16)})",
+        )
+
+        return PtpObjectProtocol.parseObjectInfo(
+            handle = handle,
+            data = result.data,
+        )
     }
 
     private fun setContentsTransferMode(mode: Int) {
@@ -753,8 +1121,7 @@ internal class PtpIpProbe(context: Context) {
         const val TAG = "AlphaPhoto"
         const val ALL_OBJECT_FORMATS = 0
         const val ROOT_ASSOCIATION = 0
-        const val CONTENTS_TRANSFER_RESET_MS = 200L
-        const val CONTENTS_TRANSFER_SETTLE_MS = 1_500L
+        const val CONTENTS_TRANSFER_READY_TIMEOUT_MS = 15_000L
         const val MEDIA_PROBE_PARTIAL_BYTES = 1024 * 1024
 
         const val SOCKET_CONNECT_TIMEOUT_MS = 2_000

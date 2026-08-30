@@ -33,6 +33,7 @@ class WifiConnectionManager(context: Context) {
         credentials: CameraWifiCredentials,
         onStatus: (String) -> Unit,
         onConnected: (CameraNetwork) -> Unit,
+        onDisconnected: (String) -> Unit,
         onError: (String) -> Unit,
     ) {
         if (networkCallback != null) {
@@ -85,19 +86,32 @@ class WifiConnectionManager(context: Context) {
 
             override fun onUnavailable() {
                 Log.e(TAG, "Camera Wi-Fi network request unavailable")
-                if (networkCallback === this) {
-                    networkCallback = null
-                    deliveredNetwork = null
+                if (networkCallback !== this) {
+                    return
                 }
+                networkCallback = null
+                deliveredNetwork = null
                 post(onError, "Android could not join the camera Wi-Fi.")
             }
 
             override fun onLost(network: Network) {
                 Log.i(TAG, "Camera Wi-Fi network lost network=$network")
-                if (deliveredNetwork == network) {
-                    deliveredNetwork = null
+                if (networkCallback !== this) {
+                    return
                 }
-                post(onStatus, "Camera Wi-Fi disconnected.")
+                val wasConnected = deliveredNetwork == network
+                try {
+                    connectivityManager.unregisterNetworkCallback(this)
+                } catch (error: IllegalArgumentException) {
+                    Log.w(TAG, "Camera Wi-Fi callback was already released.", error)
+                }
+                networkCallback = null
+                deliveredNetwork = null
+                if (wasConnected) {
+                    post(onDisconnected, "Camera Wi-Fi disconnected.")
+                } else {
+                    post(onError, "Camera Wi-Fi was lost before it became ready.")
+                }
             }
         }
 

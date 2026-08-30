@@ -48,6 +48,10 @@ class PtpEventProtocolTest {
     @Test
     fun namesSonyMediaEvents() {
         assertEquals(
+            "Store Added",
+            PtpIpProtocol.eventName(PtpIpProtocol.EVENT_STORE_ADDED),
+        )
+        assertEquals(
             "Sony Object Added",
             PtpIpProtocol.eventName(PtpIpProtocol.EVENT_SONY_OBJECT_ADDED),
         )
@@ -60,6 +64,18 @@ class PtpEventProtocolTest {
             PtpIpProtocol.eventName(
                 PtpIpProtocol.EVENT_SONY_CONTENT_INFO_LIST_CHANGED,
             ),
+        )
+    }
+
+    @Test
+    fun describesSonyContentsTransferErrors() {
+        assertEquals(
+            "Device Busy",
+            SonyMediaProtocol.contentsTransferEventDescription(1),
+        )
+        assertEquals(
+            "Status Error",
+            SonyMediaProtocol.contentsTransferEventDescription(2),
         )
     }
 
